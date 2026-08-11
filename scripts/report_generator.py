@@ -6,59 +6,14 @@
 """
 import json, math, os, sys, re
 
-# ===== 8种模型权重预设 =====
-MODEL_PRESETS = {
-    'staples': {
-        'name': '必选消费',
-        'weights_label': 'PE(28%) + PB(12%) + PEG(20%) + MA偏离(12%) + 量能(8%) + 波动率(10%) + 毛利率稳定性(10%)',
-        'weights': {'pe': 0.28, 'pb': 0.12, 'peg': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.10, 'margin_stability': 0.10},
-    },
-    'discretionary': {
-        'name': '可选消费',
-        'weights_label': 'PE(22%) + PB(12%) + PEG(22%) + MA偏离(15%) + 量能(8%) + 波动率(10%) + 品牌溢价度(11%)',
-        'weights': {'pe': 0.22, 'pb': 0.12, 'peg': 0.22, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'brand_premium': 0.11},
-    },
-    'tech': {
-        'name': '科技制造',
-        'weights_label': 'PE(20%) + PB(12%) + PEG(25%) + MA偏离(15%) + 量能(8%) + 波动率(10%) + 研发费用率(10%)',
-        'weights': {'pe': 0.20, 'pb': 0.12, 'peg': 0.25, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'rd_ratio': 0.10},
-    },
-    'cyclical': {
-        'name': '周期资源',
-        'weights_label': 'PE(25%) + PB(12%) + 商品价格偏离(20%) + MA偏离(15%) + 量能(10%) + 波动率(10%) + 产能利用率(8%)',
-        'weights': {'pe': 0.25, 'pb': 0.12, 'commodity_dev': 0.20, 'ma': 0.15, 'vol': 0.10, 'vola': 0.10, 'capacity_util': 0.08},
-    },
-    'soe': {
-        'name': '央企基建',
-        'weights_label': 'PE(15%) + PB(18%) + 股息率(20%) + MA偏离(12%) + 量能(8%) + 波动率(8%) + 订单增速(15%) + ROE(4%)',
-        'weights': {'pe': 0.15, 'pb': 0.18, 'dividend_yield': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'order_growth': 0.15, 'roe': 0.04},
-    },
-    'bank': {
-        'name': '银行保险',
-        'weights_label': 'PB(30%) + ROE(25%) + 股息率(15%) + 不良/偿付(12%) + MA偏离(10%) + 波动率(8%)',
-        'weights': {'pe': 0.00, 'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
-    },
-    'realestate': {
-        'name': '地产',
-        'weights_label': 'NAV折价(25%) + PB(20%) + 去化率(20%) + MA偏离(12%) + 量能(8%) + 杠杆率(10%) + 波动率(5%)',
-        'weights': {'pe': 0.00, 'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
-    },
-    'pharma': {
-        'name': '医药消费',
-        'weights_label': 'PE(20%) + PB(10%) + PEG(25%) + MA偏离(12%) + 量能(8%) + 波动率(8%) + 营收增速(17%)',
-        'weights': {'pe': 0.20, 'pb': 0.10, 'peg': 0.25, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'revenue_growth': 0.17},
-    },
-}
-
-# 因子中文名映射
-FACTOR_NAMES = {
-    'pe': 'PE(TTM)', 'pb': 'PB', 'peg': 'PEG', 'ma': 'MA偏离度', 'vol': '量能',
-    'vola': '波动率', 'commodity_dev': '商品价格偏离', 'capacity_util': '产能利用率',
-    'roe': 'ROE', 'dividend_yield': '股息率', 'npl_ratio': '不良/偿付',
-    'nav_discount': 'NAV折价', 'clearance_rate': '去化率', 'leverage': '杠杆率',
-    'rd_ratio': '研发费用率', 'margin_stability': '毛利率稳定性', 'brand_premium': '品牌溢价度',
-    'order_growth': '订单增速', 'revenue_growth': '营收增速',
-}
+# ===== 评分引擎（解耦的可复用模块）=====
+# 模型预设、因子评分函数、每日评分计算等核心算法已迁移至 scoring_engine.py，
+# 本文件仅负责数据编排与HTML渲染。 scoring_engine 可被任意脚本独立 import 复用。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from scoring_engine import (
+    MODEL_PRESETS, FACTOR_NAMES, OPTIONAL_FACTOR_KEYS, OPTIONAL_SCORE_FUNCS,
+    resolve_active_weights, build_weights_display, compute_daily_scores,
+)
 
 # ===== 配置区 =====
 # 支持两种模式：
@@ -132,6 +87,9 @@ else:
     _QT_PB = 0
     _QT_PRICE = 0
 
+# 历年EPS/BPS序列（Phase 1b：用于真实历史PE/PB评分口径；新格式由build_report透传，旧格式后续自行获取）
+_pershare_data = _cfg.get('pershare_data', []) if _cfg is not None else []
+
 # 兼容旧参数：growth -> staples
 if MODEL_TYPE == 'growth':
     MODEL_TYPE = 'staples'
@@ -175,6 +133,7 @@ if MODEL_TYPE not in MODEL_PRESETS:
 
 preset = MODEL_PRESETS[MODEL_TYPE]
 MODEL_NAME = preset['name']
+MODEL_DESC = preset['desc']
 WEIGHTS_LABEL = preset['weights_label']
 model_weights = dict(preset['weights'])  # 复制一份
 
@@ -185,13 +144,6 @@ for fkey, fval in optional_factors.items():
         # 用户覆盖了某个可选因子的原始值，记录下来
         pass
 
-# 可选因子列表（非价格/K线可计算，需要额外输入的因子）
-OPTIONAL_FACTOR_KEYS = [
-    'commodity_dev', 'capacity_util', 'roe', 'dividend_yield', 'npl_ratio',
-    'nav_discount', 'clearance_rate', 'leverage', 'rd_ratio', 'margin_stability',
-    'brand_premium', 'order_growth', 'revenue_growth',
-]
-
 # 合并 factor_values（保留财务数据自动填充的值）
 for fk in OPTIONAL_FACTOR_KEYS:
     if fk in optional_factors and optional_factors[fk] is not None:
@@ -199,41 +151,11 @@ for fk in OPTIONAL_FACTOR_KEYS:
     elif fk not in factor_values:
         factor_values[fk] = None  # 标记为缺失
 
-# 处理缺失的可选因子：如果模型中该因子权重>0但值为None，则将其权重均分到已有值的因子
-_optional_keys_set = set(OPTIONAL_FACTOR_KEYS)
-active_weights = {}
-missing_weight_sum = 0
-for fk, w in model_weights.items():
-    if fk in _optional_keys_set:
-        if factor_values.get(fk) is not None:
-            active_weights[fk] = w
-        else:
-            missing_weight_sum += w
-    else:
-        active_weights[fk] = w
-
-if missing_weight_sum > 0 and active_weights:
-    # 将缺失因子的权重按比例均分到已有因子
-    total_active = sum(active_weights.values())
-    if total_active > 0:
-        for fk in active_weights:
-            active_weights[fk] = active_weights[fk] + active_weights[fk] / total_active * missing_weight_sum
-else:
-    active_weights = model_weights
-
-# 归一化权重（确保总和为1）
-total_w = sum(active_weights.values())
-if total_w > 0:
-    for fk in active_weights:
-        active_weights[fk] = active_weights[fk] / total_w
+# 缺失可选因子的权重再分配 + 归一化（算法见 scoring_engine.resolve_active_weights）
+active_weights = resolve_active_weights(model_weights, factor_values)
 
 # 生成用于显示的权重标签（动态）
-weight_parts = []
-for fk, w in sorted(active_weights.items(), key=lambda x: -x[1]):
-    if w > 0.001:  # 忽略极小权重
-        fname = FACTOR_NAMES.get(fk, fk)
-        weight_parts.append(f'{fname}({int(round(w*100))}%)')
-WEIGHTS_DISPLAY = ' + '.join(weight_parts)
+WEIGHTS_DISPLAY = build_weights_display(active_weights)
 
 # ===== K线数据获取 =====
 # 支持三种模式：
@@ -314,259 +236,28 @@ for r in all_kline:
 if _has_intraday and kline:
     kline[-1]['is_intraday'] = True
 
-# ===== 基础因子评分函数（价格/K线可计算） =====
+# ===== 评分计算（委托给解耦的 scoring_engine）=====
+# 透传真实历史EPS/BPS序列（eps_series/bps_series），使每日PE/PB与PE_MIN/PE_MAX区间口径一致，
+# 修复高成长股“恒定当前EPS反推”导致的低PE陷阱；无历史EPS时自动回退到恒定当前EPS口径。
+# 旧格式（未透传pershare_data）时自行获取；获取失败则回退。
+if not _pershare_data:
+    try:
+        from financial_fetcher import fetch_pershare_data as _fetch_pershare
+        _pershare_data = _fetch_pershare(STOCK_CODE, EXCHANGE)
+    except Exception:
+        _pershare_data = []
+_eps_series = {d['year']: d['eps'] for d in _pershare_data} if _pershare_data else None
+_bps_series = {d['year']: d['bps'] for d in _pershare_data} if _pershare_data else None
 
-def score_pe(pe):
-    if pe <= 0: return 50
-    p = (pe - PE_MIN) / (PE_MAX - PE_MIN)
-    p = max(0, min(1, p))
-    return (1 - p) * 100
-
-def score_pb(pb):
-    if pb <= 0: return 50
-    p = (pb - PB_MIN) / (PB_MAX - PB_MIN)
-    p = max(0, min(1, p))
-    return (1 - p) * 100
-
-def score_peg(pe):
-    if pe <= 0 or EPS_GROWTH <= 0: return 50
-    peg = pe / (EPS_GROWTH * 100)
-    if peg < 0.8: return 95
-    elif peg < 1.0: return 80
-    elif peg < 1.2: return 65
-    elif peg < 1.5: return 50
-    elif peg < 2.0: return 35
-    else: return 20
-
-def score_ma_deviation(close, ma20, ma60):
-    if ma20 <= 0: return 50
-    dev20 = (close - ma20) / ma20 * 100
-    dev60 = (close - ma60) / ma60 * 100 if ma60 > 0 else 0
-    s20 = max(0, min(100, 50 - dev20 * 3))
-    s60 = max(0, min(100, 50 - dev60 * 2.5))
-    return s20 * 0.6 + s60 * 0.4
-
-def score_volume(volume, vol_ma20):
-    if vol_ma20 <= 0: return 50
-    ratio = volume / vol_ma20
-    if ratio < 0.5: return 85
-    elif ratio < 0.8: return 70
-    elif ratio < 1.2: return 55
-    elif ratio < 1.5: return 40
-    elif ratio < 2.0: return 30
-    else: return 20
-
-def score_volatility(close, high, low):
-    if close <= 0: return 50
-    vol = (high - low) / close
-    if vol < 0.01: return 85
-    elif vol < 0.02: return 70
-    elif vol < 0.03: return 55
-    elif vol < 0.05: return 40
-    else: return 20
-
-# ===== 可选因子评分函数 =====
-
-def score_roe(roe):
-    """ROE评分：ROE越高越好"""
-    if roe <= 0: return 20
-    if roe >= 0.25: return 95
-    elif roe >= 0.20: return 85
-    elif roe >= 0.15: return 70
-    elif roe >= 0.10: return 55
-    elif roe >= 0.05: return 35
-    else: return 20
-
-def score_dividend_yield(div_yield):
-    """股息率评分：越高越好"""
-    if div_yield <= 0: return 30
-    if div_yield >= 0.08: return 95
-    elif div_yield >= 0.06: return 85
-    elif div_yield >= 0.04: return 70
-    elif div_yield >= 0.03: return 55
-    elif div_yield >= 0.02: return 40
-    else: return 30
-
-def score_rd_ratio(rd_ratio):
-    """研发费用率评分：科技/医药越高越好"""
-    if rd_ratio <= 0: return 30
-    if rd_ratio >= 0.15: return 95
-    elif rd_ratio >= 0.10: return 80
-    elif rd_ratio >= 0.05: return 60
-    elif rd_ratio >= 0.03: return 45
-    else: return 30
-
-def score_margin_stability(margin_stability):
-    """毛利率稳定性评分：越稳定越好（输入为标准差，越小越好）"""
-    if margin_stability <= 0: return 90
-    elif margin_stability <= 0.01: return 80
-    elif margin_stability <= 0.02: return 65
-    elif margin_stability <= 0.05: return 50
-    elif margin_stability <= 0.10: return 35
-    else: return 20
-
-def score_brand_premium(brand_premium):
-    """品牌溢价度评分：毛利率/行业均值，越高越好"""
-    if brand_premium <= 0: return 20
-    if brand_premium >= 3.0: return 95
-    elif brand_premium >= 2.0: return 85
-    elif brand_premium >= 1.5: return 70
-    elif brand_premium >= 1.0: return 55
-    else: return 35
-
-def score_npl_ratio(npl_ratio):
-    """不良率评分：越低越好"""
-    if npl_ratio <= 0: return 95
-    elif npl_ratio <= 0.01: return 85
-    elif npl_ratio <= 0.015: return 70
-    elif npl_ratio <= 0.02: return 55
-    elif npl_ratio <= 0.03: return 35
-    else: return 20
-
-def score_nav_discount(nav_discount):
-    """NAV折价评分：P/NAV越低越好（<1为低估）"""
-    if nav_discount <= 0: return 90
-    elif nav_discount <= 0.5: return 95
-    elif nav_discount <= 0.8: return 80
-    elif nav_discount <= 1.0: return 65
-    elif nav_discount <= 1.5: return 45
-    else: return 25
-
-def score_clearance_rate(clearance_rate):
-    """去化率评分：越高越好"""
-    if clearance_rate <= 0: return 20
-    elif clearance_rate >= 0.80: return 90
-    elif clearance_rate >= 0.60: return 75
-    elif clearance_rate >= 0.40: return 55
-    elif clearance_rate >= 0.20: return 35
-    else: return 20
-
-def score_leverage(leverage):
-    """杠杆率评分：有息负债率越低越好"""
-    if leverage <= 0: return 90
-    elif leverage <= 0.30: return 80
-    elif leverage <= 0.50: return 65
-    elif leverage <= 0.70: return 45
-    else: return 25
-
-def score_revenue_growth(rev_growth):
-    """营收增速评分：越高越好"""
-    if rev_growth <= 0: return 30
-    elif rev_growth >= 0.30: return 95
-    elif rev_growth >= 0.20: return 85
-    elif rev_growth >= 0.10: return 70
-    elif rev_growth >= 0.05: return 55
-    else: return 40
-
-def score_order_growth(order_growth):
-    """订单增速评分：越高越好"""
-    if order_growth <= 0: return 30
-    elif order_growth >= 0.30: return 95
-    elif order_growth >= 0.20: return 85
-    elif order_growth >= 0.10: return 70
-    elif order_growth >= 0.05: return 55
-    else: return 40
-
-def score_commodity_dev(commodity_dev):
-    """商品价格偏离评分：输入为偏离均值的程度（负值为低于均值=低估），越高越好"""
-    if commodity_dev is None: return 50
-    if commodity_dev <= -0.30: return 95
-    elif commodity_dev <= -0.20: return 80
-    elif commodity_dev <= -0.10: return 65
-    elif commodity_dev <= 0.10: return 50
-    elif commodity_dev <= 0.20: return 35
-    else: return 20
-
-def score_capacity_util(capacity_util):
-    """产能利用率评分：越高越好"""
-    if capacity_util is None: return 50
-    if capacity_util <= 0: return 20
-    elif capacity_util >= 0.90: return 95
-    elif capacity_util >= 0.80: return 80
-    elif capacity_util >= 0.70: return 65
-    elif capacity_util >= 0.50: return 50
-    elif capacity_util >= 0.30: return 35
-    else: return 20
-
-# 可选因子评分函数映射
-OPTIONAL_SCORE_FUNCS = {
-    'roe': score_roe,
-    'dividend_yield': score_dividend_yield,
-    'rd_ratio': score_rd_ratio,
-    'margin_stability': score_margin_stability,
-    'brand_premium': score_brand_premium,
-    'npl_ratio': score_npl_ratio,
-    'nav_discount': score_nav_discount,
-    'clearance_rate': score_clearance_rate,
-    'leverage': score_leverage,
-    'revenue_growth': score_revenue_growth,
-    'order_growth': score_order_growth,
-    'commodity_dev': score_commodity_dev,
-    'capacity_util': score_capacity_util,
+_score_params = {
+    'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX,
+    'eps_growth': EPS_GROWTH,
+    'latest_price': latest_price, 'latest_pe': latest_pe, 'latest_pb': latest_pb,
+    'total_shares': TOTAL_SHARES,
+    'eps_series': _eps_series, 'bps_series': _bps_series,
+    'dps': _REPORT_CONFIG.get('dps'),
 }
-
-# ===== 评分计算循环 =====
-n = len(kline)
-results = []
-for i in range(n):
-    row = kline[i]
-    close, high, low, volume = row['close'], row['high'], row['low'], row['volume']
-    ma20 = sum(kline[j]['close'] for j in range(max(0, i-19), i+1)) / min(20, i+1)
-    ma60 = sum(kline[j]['close'] for j in range(max(0, i-59), i+1)) / min(60, i+1)
-    vol_ma20 = sum(kline[j]['volume'] for j in range(max(0, i-19), i+1)) / min(20, i+1)
-    pe_ttm = close / latest_price * latest_pe if latest_price > 0 else 0
-    pb = close / latest_price * latest_pb if latest_price > 0 else 0
-    mcap = close * TOTAL_SHARES
-
-    # 盘中虚拟点：剔除量能因子（成交量不完整），权重重新归一化
-    is_intraday = row.get('is_intraday', False)
-    if is_intraday and 'vol' in active_weights and active_weights['vol'] > 0:
-        cur_weights = {k: v for k, v in active_weights.items() if k != 'vol'}
-        tw = sum(cur_weights.values())
-        if tw > 0:
-            cur_weights = {k: v/tw for k, v in cur_weights.items()}
-    else:
-        cur_weights = active_weights
-
-    # 计算各因子得分
-    factor_scores = {}
-    total = 0
-
-    for fk, w in cur_weights.items():
-        if w < 0.001:  # 跳过权重为0的因子
-            factor_scores[fk] = 0
-            continue
-        if fk == 'pe':
-            s = score_pe(pe_ttm)
-        elif fk == 'pb':
-            s = score_pb(pb)
-        elif fk == 'peg':
-            s = score_peg(pe_ttm)
-        elif fk == 'ma':
-            s = score_ma_deviation(close, ma20, ma60)
-        elif fk == 'vol':
-            s = score_volume(volume, vol_ma20)
-        elif fk == 'vola':
-            s = score_volatility(close, high, low)
-        elif fk in OPTIONAL_SCORE_FUNCS and fk in factor_values and factor_values[fk] is not None:
-            s = OPTIONAL_SCORE_FUNCS[fk](factor_values[fk])
-        else:
-            s = 50  # 缺失数据默认中性分
-        factor_scores[fk] = s
-        total += s * w
-
-    total = round(total, 2)
-    result_entry = {
-        'date': row['date'], 'close': close, 'pe_ttm': round(pe_ttm, 2), 'pb': round(pb, 2),
-        'market_cap': round(mcap, 2), 'ma20': round(ma20, 2), 'ma60': round(ma60, 2),
-        'score': total,
-        'is_intraday': is_intraday,
-    }
-    # 只记录权重>0的因子分数
-    for fk, w in cur_weights.items():
-        if w > 0.001:
-            result_entry[f's_{fk}'] = round(factor_scores.get(fk, 0), 1)
-    results.append(result_entry)
+results = compute_daily_scores(kline, active_weights, factor_values, _score_params)
 
 scores = [r['score'] for r in results]
 print(f"  评分: 均值{sum(scores)/len(scores):.1f} 最低{min(scores):.1f} 最高{max(scores):.1f} 最新{scores[-1]:.1f}")
@@ -580,7 +271,7 @@ for idx_r, r in enumerate(results):
         intraday_markpoint.append({
             'name': '盘中实时',
             'coord': [r['date'], r['score']],
-            'value': "盘中 %.2f元\\n估值分 %s" % (r['close'], r['score']),
+            'value': "盘中 %.2f元\\n分数 %s" % (r['close'], r['score']),
             'itemStyle': {'color': '#f59e0b'},
         })
         break
@@ -605,6 +296,11 @@ val_data_js += f"\nvar INTRADAY_MARKPOINT = {json.dumps(intraday_markpoint, ensu
 
 period_label = f"{kline[0]['date'][:4]}.{kline[0]['date'][5:7]} - {kline[-1]['date'][:4]}.{kline[-1]['date'][5:7]}"
 
+# 计算默认显示最近1年的dataZoom起始百分比
+_total_data_points = len(results)
+_one_year_points = min(244, _total_data_points)
+_default_zoom_start = round(max(0, (_total_data_points - _one_year_points) / _total_data_points * 100), 1)
+
 # 预计算weights_display用于HTML（不能在f-string中用反斜杠）
 weights_display_lines = WEIGHTS_DISPLAY.replace(' + ', '\n             + ')
 
@@ -612,10 +308,26 @@ weights_display_lines = WEIGHTS_DISPLAY.replace(' + ', '\n             + ')
 latest = results[-1]
 if latest['score'] >= 80: status_text, status_class = '极度低估', 'fs-score-high'
 elif latest['score'] >= 70: status_text, status_class = '低估', 'fs-score-high'
-elif latest['score'] >= 60: status_text, status_class = '中性偏低', 'fs-score-mid'
-elif latest['score'] >= 40: status_text, status_class = '中性偏高', 'fs-score-mid'
+elif latest['score'] >= 40: status_text, status_class = '无交易价值', 'fs-score-mid'
 elif latest['score'] >= 20: status_text, status_class = '高估', 'fs-score-low'
 else: status_text, status_class = '极度高估', 'fs-score-low'
+
+# ===== 高估但高回报/高成长 提示注释（4.3 校验扩展，2026-08）=====
+# 当评分处于高估档，但公司股息率高或盈利增速快时，提示估值中枢可能上移，避免机械采信高估结论
+_caveat_html = ''
+_dy = factor_values.get('dividend_yield', 0) or 0
+if latest['score'] < 40 and (_dy >= 0.03 or EPS_GROWTH > 0.20):
+    _notes = []
+    if _dy >= 0.03:
+        _notes.append(f'股息率约 {_dy*100:.1f}%，股东回报（分红/回购）正在提升')
+    if EPS_GROWTH > 0.20:
+        _notes.append(f'盈利增速约 {EPS_GROWTH*100:.0f}%，高成长可能消化当前估值')
+    _caveat_html = (
+        '<div style="margin-top:10px;padding:10px 14px;border:1px solid #f59e0b;'
+        'border-left:4px solid #f59e0b;background:#fffbeb;border-radius:6px;font-size:0.92rem;">'
+        '<strong>&#9888;&#65039; 估值提示：</strong>当前处于高估区间，但该股' + '；'.join(_notes) +
+        '。高估判断需结合盈利/回报的持续性看待：若价格中枢或盈利中枢上移成立，静态高估可能被消化；若不可持续，则回归均值风险真实存在。</div>'
+    )
 
 # 关键日期
 key_dates = []
@@ -741,6 +453,10 @@ tbody tr:nth-child(even) {{ background: #f0eeeb; }}
 .chart-figure figcaption {{ font-size: 0.9rem; font-weight: 600; margin-bottom: 0.75rem; }}
 .fullscreen-btn {{ display: inline-block; padding: 0.5rem 1.2rem; background: #1a4b8c; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; margin-bottom: 1rem; }}
 .fullscreen-btn:hover {{ background: #153a6e; }}
+.range-btns {{ display: inline-flex; gap: 0.4rem; margin-left: 1rem; vertical-align: middle; }}
+.range-btn {{ padding: 0.35rem 0.8rem; background: #fff; color: #1a4b8c; border: 1px solid #1a4b8c; border-radius: 4px; cursor: pointer; font-size: 0.8rem; transition: all 0.2s; }}
+.range-btn:hover {{ background: #e8f0fa; }}
+.range-btn.active {{ background: #1a4b8c; color: #fff; }}
 .chart-overlay {{ display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #0a0e17; z-index: 9999; flex-direction: column; padding: 0; }}
 .chart-overlay.active {{ display: flex; }}
 .chart-overlay-header {{ display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 1rem; background: #0d2137; color: #fff; flex-shrink: 0; border-bottom: 1px solid #1a2332; }}
@@ -786,13 +502,13 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
     <div class="metric-card"><div class="number">~{MARKET_CAP}</div><div class="label">当前市值（亿元）</div></div>
   </div>
   <h3>行业特征与竞争格局</h3>
-  <p>当前PE(TTM) {latest_pe:.1f}倍，PB {latest_pb:.2f}倍，总股本{TOTAL_SHARES}亿股。估值处于{'历史偏低' if latest['score'] >= 60 else '中性' if latest['score'] >= 40 else '偏高'}水平。</p>
+  <p>当前PE(TTM) {latest_pe:.1f}倍，PB {latest_pb:.2f}倍，总股本{TOTAL_SHARES}亿股。估值处于{'历史偏低' if latest['score'] >= 70 else '无交易价值' if latest['score'] >= 40 else '偏高'}水平。</p>
 {_financial_summary_html}
 </section>
 <section id="s2">
   <h2 class="section-num">Section 02</h2>
   <h2>估值评分模型设计</h2>
-  <p>采用<mark class="key">{MODEL_NAME}估值模型</mark>，{num_active_factors}因子加权体系：</p>
+  <p>采用<mark class="key">{MODEL_NAME}估值模型</mark>（{MODEL_DESC}），{num_active_factors}因子加权体系：</p>
   <div class="formula">{weights_display_lines}</div>
   <h3>评分模型参数</h3>
   <div class="table-wrap"><table>
@@ -801,14 +517,13 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
 {factor_table_html}
     </tbody>
   </table></div>
-  <h3>估值分数分界线标准</h3>
+  <h3>分数分界线标准</h3>
   <div class="table-wrap"><table>
     <thead><tr><th>分数区间</th><th>估值状态</th><th>投资含义</th></tr></thead>
     <tbody>
       <tr><td>80-100</td><td>极度低估</td><td>历史性低估区间，具备强烈安全边际</td></tr>
       <tr><td>70-79</td><td>低估</td><td>估值偏低，可以考虑分批建仓</td></tr>
-      <tr><td>60-69</td><td>中性偏低</td><td>估值合理偏下，维持持仓观望</td></tr>
-      <tr><td>40-59</td><td>中性偏高</td><td>估值合理偏上，关注止盈信号</td></tr>
+      <tr><td>40-69</td><td>无交易价值</td><td>估值合理区间，无明确交易信号，持仓观望</td></tr>
       <tr><td>20-39</td><td>高估</td><td>估值偏高，考虑减仓或观望</td></tr>
       <tr><td>0-19</td><td>极度高估</td><td>严重高估，存在较大回调风险</td></tr>
     </tbody>
@@ -820,21 +535,30 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <div class="chart-figure">
     <figcaption>图1：{STOCK_NAME}估值评分回测曲线（{len(results)}个交易日）</figcaption>
     <button class="fullscreen-btn" onclick="openFullscreenChart()">&#x26F6; 横屏查看</button>
+    <span class="range-btns">
+      <button class="range-btn" data-range="3m">3个月</button>
+      <button class="range-btn" data-range="6m">6个月</button>
+      <button class="range-btn active" data-range="1y">1年</button>
+      <button class="range-btn" data-range="2y">2年</button>
+      <button class="range-btn" data-range="3y">3年</button>
+      <button class="range-btn" data-range="all">全部</button>
+    </span>
     <div id="chart-backtest" style="width:100%;height:550px;"></div>
-    <p>图表说明：蓝色折线为综合估值分（0-100），浅灰色面积图为收盘价走势（元），紫色折线为PE(TTM)。绿色虚线为70分低估分界线，红色虚线为40分高估分界线。估值分越高代表越被低估。</p>
+    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线。分数越高代表越被低估。</p>
   </div>
 </section>
 <section id="s4">
   <h2 class="section-num">Section 04</h2>
   <h2>关键时点估值分析</h2>
   <div class="table-wrap"><table>
-    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>估值分</th><th>状态</th></tr></thead>
+    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>状态</th></tr></thead>
     <tbody id="keyDateTable"></tbody>
   </table></div>
   <h3>最新估值状态</h3>
   <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}）</p>
   <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元</p>
   <p>状态：<strong>{status_text}</strong></p>
+  {_caveat_html}
 </section>
 <section id="s5">
   <h2 class="section-num">Section 05</h2>
@@ -872,7 +596,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <div class="chart-overlay-info">
     <div><span class="fs-label">股票 </span><span class="fs-value" id="fsStockName">{STOCK_NAME}({STOCK_CODE})</span></div>
     <div><span class="fs-label">最新价 </span><span class="fs-value" id="fsPrice">{latest['close']} 元</span></div>
-    <div><span class="fs-label">估值分 </span><span class="fs-value {status_class}" id="fsScore">{latest['score']}</span></div>
+    <div><span class="fs-label">分数 </span><span class="fs-value {status_class}" id="fsScore">{latest['score']}</span></div>
     <div><span class="fs-label">状态 </span><span class="fs-value {status_class}" id="fsStatus">{status_text}</span></div>
   </div>
   <div class="chart-overlay-body"><div id="chart-backtest-fullscreen"></div></div>
@@ -896,7 +620,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   var dates = data.map(function(d) {{ return d.date; }});
   var scores = data.map(function(d) {{ return d.score; }});
   var closes = data.map(function(d) {{ return d.close; }});
-  var peTTMs = data.map(function(d) {{ return d.pe_ttm; }});
+  var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
   var p20 = sortedScores[Math.floor(sortedScores.length * 0.2)];
@@ -935,10 +659,10 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>估值分: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>PE(TTM): ' + d.pe_ttm + '<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
-    legend: {{ data: ['估值分(0-100)', '收盘价(元)', 'PE(TTM)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
+    legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
     grid: {{ left: 70, right: 85, top: 45, bottom: 65 }},
     xAxis: {{
       type: 'category', data: dates,
@@ -946,15 +670,16 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       axisLine: {{ lineStyle: {{ color: '#d4d0c8' }} }}
     }},
     yAxis: [
-      {{ type: 'value', name: '估值分', min: 0, max: 100, nameTextStyle: {{ color: '#1a4b8c', fontSize: 13 }}, axisLabel: {{ color: '#1a4b8c', fontSize: 12 }}, splitLine: {{ lineStyle: {{ color: '#d4d0c8' }} }} }},
-      {{ type: 'value', name: '价格/PE/市值', nameTextStyle: {{ color: '#6b6b6b', fontSize: 13 }}, axisLabel: {{ color: '#6b6b6b', fontSize: 12 }}, splitLine: {{ show: false }} }}
+      {{ type: 'value', name: '分数', min: 0, max: 100, nameTextStyle: {{ color: '#1a4b8c', fontSize: 13 }}, axisLabel: {{ color: '#1a4b8c', fontSize: 12 }}, splitLine: {{ lineStyle: {{ color: '#d4d0c8' }} }} }},
+      {{ type: 'value', name: '价格', nameTextStyle: {{ color: '#6b6b6b', fontSize: 13 }}, axisLabel: {{ color: '#6b6b6b', fontSize: 12 }}, splitLine: {{ show: false }} }},
+      {{ type: 'value', show: false, splitLine: {{ show: false }} }}
     ],
     dataZoom: [
-      {{ type: 'slider', xAxisIndex: 0, start: 0, end: 100, bottom: 8, height: 22, borderColor: '#d4d0c8', fillerColor: 'rgba(26,75,140,0.12)', handleStyle: {{ color: '#1a4b8c', borderColor: '#1a4b8c' }}, textStyle: {{ color: '#6b6b6b', fontSize: 11 }} }}
+      {{ type: 'slider', xAxisIndex: 0, start: {_default_zoom_start}, end: 100, bottom: 8, height: 22, borderColor: '#d4d0c8', fillerColor: 'rgba(26,75,140,0.12)', handleStyle: {{ color: '#1a4b8c', borderColor: '#1a4b8c' }}, textStyle: {{ color: '#6b6b6b', fontSize: 11 }} }}
     ],
     series: [
       {{
-        name: '估值分(0-100)', type: 'line', data: scores, yAxisIndex: 0,
+        name: '分数(0-100)', type: 'line', data: scores, yAxisIndex: 0,
         lineStyle: {{ color: '#1a4b8c', width: 1.5 }}, itemStyle: {{ color: '#1a4b8c' }}, symbol: 'none',
         markPoint: {{ data: INTRADAY_MARKPOINT, symbol: 'circle', symbolSize: 10, label: {{ show: true, position: 'top', color: '#f59e0b', fontSize: 11, formatter: function(p) {{ return p.value; }} }} }},
         areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: '#1a4b8c44' }}, {{ offset: 1, color: '#1a4b8c05' }}] }} }},
@@ -969,10 +694,27 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
         }}, z: 5
       }},
       {{ name: '收盘价(元)', type: 'line', data: closes, yAxisIndex: 1, lineStyle: {{ color: '#d4d0c8', width: 1 }}, itemStyle: {{ color: '#d4d0c8' }}, symbol: 'none', areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: 'rgba(180,180,180,0.25)' }}, {{ offset: 1, color: 'rgba(180,180,180,0.02)' }}] }} }}, z: 1 }},
-      {{ name: 'PE(TTM)', type: 'line', data: peTTMs, yAxisIndex: 1, lineStyle: {{ color: '#b8860b88', width: 1.5 }}, itemStyle: {{ color: '#b8860b' }}, symbol: 'none', z: 2 }}
+      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#b8860b88', width: 1.5 }}, itemStyle: {{ color: '#b8860b' }}, symbol: 'none', z: 2 }}
     ]
   }});
   window.addEventListener('resize', function() {{ chart.resize(); }});
+
+  // 时间范围快捷按钮
+  var rangeMap = {{ '3m': 63, '6m': 124, '1y': 244, '2y': 488, '3y': 732, 'all': 0 }};
+  var rangeBtns = document.querySelectorAll('.range-btn');
+  rangeBtns.forEach(function(btn) {{
+    btn.addEventListener('click', function() {{
+      rangeBtns.forEach(function(b) {{ b.classList.remove('active'); }});
+      btn.classList.add('active');
+      var range = btn.getAttribute('data-range');
+      var pts = rangeMap[range] || 0;
+      var startPct = 0;
+      if (pts > 0 && pts < data.length) {{
+        startPct = (data.length - pts) / data.length * 100;
+      }}
+      chart.dispatchAction({{ type: 'dataZoom', start: startPct, end: 100 }});
+    }});
+  }});
 
   // 填充关键日期表格
   var keyDates = [{key_dates_str}];
@@ -982,7 +724,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
     for (var i = data.length - 1; i >= 0 && added < 8; i--) {{
       if (keyDates.indexOf(data[i].date) !== -1 || added < 4) {{
         var r = data[i];
-        var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 60 ? '中性偏低' : r.score >= 40 ? '中性偏高' : r.score >= 20 ? '高估' : '极度高估';
+        var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 40 ? '无交易价值' : r.score >= 20 ? '高估' : '极度高估';
         tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + st + '</td></tr>';
         added++;
       }}
@@ -1005,7 +747,7 @@ function openFullscreenChart() {{
   var dates = data.map(function(d) {{ return d.date; }});
   var scores = data.map(function(d) {{ return d.score; }});
   var closes = data.map(function(d) {{ return d.close; }});
-  var peTTMs = data.map(function(d) {{ return d.pe_ttm; }});
+  var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
   var p20 = sortedScores[Math.floor(sortedScores.length * 0.2)];
@@ -1055,10 +797,10 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>估值分: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>PE(TTM): ' + d.pe_ttm + '<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
-    legend: {{ data: ['估值分(0-100)', '收盘价(元)', 'PE(TTM)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
+    legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
     grid: {{ left: 65, right: 80, top: 45, bottom: 55 }},
     xAxis: {{
       type: 'category', data: dates,
@@ -1066,15 +808,16 @@ function openFullscreenChart() {{
       axisLine: {{ lineStyle: {{ color: '#1a2332' }} }}
     }},
     yAxis: [
-      {{ type: 'value', name: '估值分', min: 0, max: 100, nameTextStyle: {{ color: '#60a5fa', fontSize: 12 }}, axisLabel: {{ color: '#60a5fa', fontSize: 11 }}, splitLine: {{ lineStyle: {{ color: '#1a2332' }} }} }},
-      {{ type: 'value', name: '价格/PE/市值', nameTextStyle: {{ color: '#9ca3af', fontSize: 12 }}, axisLabel: {{ color: '#9ca3af', fontSize: 11 }}, splitLine: {{ show: false }} }}
+      {{ type: 'value', name: '分数', min: 0, max: 100, nameTextStyle: {{ color: '#60a5fa', fontSize: 12 }}, axisLabel: {{ color: '#60a5fa', fontSize: 11 }}, splitLine: {{ lineStyle: {{ color: '#1a2332' }} }} }},
+      {{ type: 'value', name: '价格', nameTextStyle: {{ color: '#9ca3af', fontSize: 12 }}, axisLabel: {{ color: '#9ca3af', fontSize: 11 }}, splitLine: {{ show: false }} }},
+      {{ type: 'value', show: false, splitLine: {{ show: false }} }}
     ],
     dataZoom: [
-      {{ type: 'slider', xAxisIndex: 0, start: 0, end: 100, bottom: 5, height: 20, borderColor: '#374151', fillerColor: 'rgba(96,165,250,0.12)', handleStyle: {{ color: '#60a5fa', borderColor: '#60a5fa' }}, textStyle: {{ color: '#9ca3af', fontSize: 10 }} }}
+      {{ type: 'slider', xAxisIndex: 0, start: {_default_zoom_start}, end: 100, bottom: 5, height: 20, borderColor: '#374151', fillerColor: 'rgba(96,165,250,0.12)', handleStyle: {{ color: '#60a5fa', borderColor: '#60a5fa' }}, textStyle: {{ color: '#9ca3af', fontSize: 10 }} }}
     ],
     series: [
       {{
-        name: '估值分(0-100)', type: 'line', data: scores, yAxisIndex: 0,
+        name: '分数(0-100)', type: 'line', data: scores, yAxisIndex: 0,
         lineStyle: {{ color: '#60a5fa', width: 1.2 }}, itemStyle: {{ color: '#60a5fa' }}, symbol: 'none',
         markPoint: {{ data: INTRADAY_MARKPOINT, symbol: 'circle', symbolSize: 12, label: {{ show: true, position: 'top', color: '#f59e0b', fontSize: 12, formatter: function(p) {{ return p.value; }} }} }},
         areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: '#60a5fa33' }}, {{ offset: 1, color: '#60a5fa05' }}] }} }},
@@ -1089,7 +832,7 @@ function openFullscreenChart() {{
         }}, z: 5
       }},
       {{ name: '收盘价(元)', type: 'line', data: closes, yAxisIndex: 1, lineStyle: {{ color: '#9ca3af', width: 1 }}, itemStyle: {{ color: '#9ca3af' }}, symbol: 'none', areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: 'rgba(156,163,175,0.15)' }}, {{ offset: 1, color: 'rgba(156,163,175,0.02)' }}] }} }}, z: 1 }},
-      {{ name: 'PE(TTM)', type: 'line', data: peTTMs, yAxisIndex: 1, lineStyle: {{ color: '#fbbf24', width: 1.2 }}, itemStyle: {{ color: '#fbbf24' }}, symbol: 'none', z: 2 }}
+      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#fbbf24', width: 1.2 }}, itemStyle: {{ color: '#fbbf24' }}, symbol: 'none', z: 2 }}
     ]
   }});
   var resizeTimer;

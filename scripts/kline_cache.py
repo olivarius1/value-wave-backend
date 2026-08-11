@@ -8,6 +8,7 @@ K线数据缓存与增量更新模块
 import json
 import os
 import sys
+import time
 import urllib.request
 import datetime
 
@@ -88,46 +89,84 @@ def _extract_qt_info(qt):
         return {'pe': 0, 'pb': 0, 'price': 0, 'name': qt[1] if len(qt) > 1 else ''}
 
 
-def fetch_full(stock_code, exchange, years=10):
-    """全量获取N年K线数据（6批API调用）"""
+def _fetch_with_retry(full_code, start_date, end_date, retries=3, backoff=2):
+    """带重试的K线API调用（指数退避）"""
+    for attempt in range(1, retries + 1):
+        try:
+            jd = _fetch_kline_api(full_code, start_date, end_date)
+            return jd
+        except Exception as e:
+            if attempt < retries:
+                wait = backoff ** attempt
+                print(f"    重试{attempt}/{retries-1} ({wait}s后): {e}", file=sys.stderr)
+                time.sleep(wait)
+            else:
+                raise
+    return None
+
+
+def fetch_full(stock_code, exchange, years=10, chunk_years=3):
+    """
+    全量获取N年K线数据（分块+重试）
+    - 按 chunk_years 年为一块（默认3年），进度按块报告
+    - 每块内部按700天API调用（腾讯API单次上限500条）
+    - 每次API调用失败自动重试3次（指数退避）
+    """
     full_code = f"{exchange}{stock_code}"
     today = datetime.date.today()
     start = today - datetime.timedelta(days=years * 365)
 
-    # 每批约700自然日覆盖~500个交易日
-    batch_days = 700
-    batches = []
+    # 按 chunk_years 年划分大块
+    chunk_days = chunk_years * 365
+    chunks = []
     current = start
     while current < today:
-        end = current + datetime.timedelta(days=batch_days)
-        if end > today + datetime.timedelta(days=365):
-            end = today + datetime.timedelta(days=365)
-        batches.append((current.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')))
-        current = end
+        chunk_end = current + datetime.timedelta(days=chunk_days)
+        if chunk_end > today + datetime.timedelta(days=30):
+            chunk_end = today + datetime.timedelta(days=30)
+        chunks.append((current, chunk_end))
+        current = chunk_end
 
     all_kline = []
     seen_dates = set()
     qt_info = {'pe': 0, 'pb': 0, 'price': 0, 'name': ''}
 
-    for i, (s, e) in enumerate(batches):
-        try:
-            jd = _fetch_kline_api(full_code, s, e)
-            kdata, qt = _parse_kline_response(jd, full_code)
-            if qt:
-                qt_info = _extract_qt_info(qt)
-            for row in kdata:
-                if row[0] not in seen_dates:
-                    all_kline.append(row[:6])  # [date, open, close, high, low, volume]
-                    seen_dates.add(row[0])
-            print(f"  K线批次{i+1}/{len(batches)}: {s}~{e} = {len(kdata)}天")
-        except Exception as e_err:
-            print(f"  K线批次{i+1}获取失败: {e_err}", file=sys.stderr)
+    # API单次请求覆盖~700自然日（≤500交易日）
+    api_batch_days = 700
+
+    for ci, (chunk_start, chunk_end) in enumerate(chunks):
+        chunk_count = 0
+        # 块内按700天细分API调用
+        cur = chunk_start
+        while cur < chunk_end:
+            api_end = cur + datetime.timedelta(days=api_batch_days)
+            if api_end > chunk_end:
+                api_end = chunk_end
+            s = cur.strftime('%Y-%m-%d')
+            e = api_end.strftime('%Y-%m-%d')
+            try:
+                jd = _fetch_with_retry(full_code, s, e)
+                kdata, qt = _parse_kline_response(jd, full_code)
+                if qt:
+                    qt_info = _extract_qt_info(qt)
+                for row in kdata:
+                    if row[0] not in seen_dates:
+                        all_kline.append(row[:6])
+                        seen_dates.add(row[0])
+                        chunk_count += 1
+            except Exception as e_err:
+                print(f"  块{ci+1} 子批{s}~{e} 最终失败: {e_err}", file=sys.stderr)
+            cur = api_end
+
+        cs = chunk_start.strftime('%Y-%m')
+        ce = chunk_end.strftime('%Y-%m')
+        print(f"  K线块{ci+1}/{len(chunks)}: {cs}~{ce} = {chunk_count}天")
 
     return all_kline, qt_info
 
 
 def fetch_incremental(stock_code, exchange, last_date):
-    """增量获取 last_date 之后的新K线数据（1次API调用）"""
+    """增量获取 last_date 之后的新K线数据（1次API调用，带重试）"""
     full_code = f"{exchange}{stock_code}"
     today = datetime.date.today()
     # 从 last_date 的下一天开始
@@ -135,7 +174,7 @@ def fetch_incremental(stock_code, exchange, last_date):
     end = (today + datetime.timedelta(days=30)).strftime('%Y-%m-%d')
 
     try:
-        jd = _fetch_kline_api(full_code, start, end)
+        jd = _fetch_with_retry(full_code, start, end)
         kdata, qt = _parse_kline_response(jd, full_code)
         qt_info = _extract_qt_info(qt)
         # 过滤掉 <= last_date 的数据

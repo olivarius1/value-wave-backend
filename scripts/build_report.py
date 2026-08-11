@@ -48,6 +48,7 @@ def _run_new_format():
     parser.add_argument('--name', help='手动股票名称 (覆盖自动)')
     parser.add_argument('--no-cache', action='store_true', help='强制全量刷新K线')
     parser.add_argument('--subtitle', help='报告副标题')
+    parser.add_argument('--dps', type=float, help='每股年分红DPS(元)，股息率因子动态化：历史每日股息率=dps/当日价 (A2方案)')
 
     # 解析已知参数，剩余的用 --key:value 格式解析为可选因子
     args, remaining = parser.parse_known_args()
@@ -102,13 +103,15 @@ def _run_new_format():
     # 市值 = 总股本 × 当前股价
     market_cap = round(total_shares * qt_price, 0) if total_shares and qt_price else 0
 
-    # 3. 计算PE/PB区间（如果用户未手动指定）
+    # 3. 获取历年EPS/BPS序列（用于PE/PB区间计算 & 真实历史PE评分口径）
+    pershare_data = fetch_pershare_data(stock_code, exchange)
+
+    # 计算PE/PB区间（如果用户未手动指定）
     if args.pe:
         pe_min, pe_max = args.pe
         print(f"  PE区间: {pe_min} ~ {pe_max} (手动指定)")
     else:
         print(f"  计算历史PE/PB百分位区间...")
-        pershare_data = fetch_pershare_data(stock_code, exchange)
         val_range = compute_valuation_range(kline_data, pershare_data, qt_pe, qt_pb)
         pe_min = val_range['pe_min']
         pe_max = val_range['pe_max']
@@ -123,7 +126,6 @@ def _run_new_format():
         pass  # 已从 val_range 获取
     else:
         # 只指定了PE没指定PB，需要单独计算PB
-        pershare_data = fetch_pershare_data(stock_code, exchange) if 'pershare_data' not in dir() else pershare_data
         val_range = compute_valuation_range(kline_data, pershare_data, qt_pe, qt_pb)
         pb_min = val_range['pb_min']
         pb_max = val_range['pb_max']
@@ -134,6 +136,12 @@ def _run_new_format():
     if reports:
         metrics = compute_financial_metrics(reports)
         optional_factors = auto_fill_factors(optional_factors, metrics, model_type)
+
+    # 动态DPS股息率：若提供每股分红且未手动指定股息率，自动换算当前股息率（保证因子权重生效）
+    if args.dps and args.dps > 0 and 'dividend_yield' not in optional_factors:
+        if qt_price and qt_price > 0:
+            optional_factors['dividend_yield'] = round(args.dps / qt_price, 4)
+            print(f"  [auto] 股息率 = {optional_factors['dividend_yield']:.2%} (DPS {args.dps:.2f}元 / 现价 {qt_price:.2f}元，历史逐日动态)")
 
     # 5. 构建配置并调用报告生成器
     subtitle = args.subtitle or f"{stock_name}估值框架与10年回测"
@@ -157,11 +165,13 @@ def _run_new_format():
         'subtitle': subtitle,
         'model': model_type,
         'optional_factors': optional_factors,
+        'dps': args.dps,
         'kline_files': [],
         'kline_data': kline_data,
         'qt_pe': qt_pe,
         'qt_pb': qt_pb,
         'qt_price': qt_price,
+        'pershare_data': pershare_data,
     }
 
     # 通过全局变量传递config，exec report_generator.py
