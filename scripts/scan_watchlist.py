@@ -58,6 +58,15 @@ WATCHLIST_MAP = {
     '阳光电源': ('300274', 'tech'),
     '高能环境': ('603588', 'soe'),
     '晨光股份': ('603899', 'staples'),
+    '德明利':   ('001309', 'tech'),
+    '中际旭创': ('300308', 'tech'),
+    '新易盛':   ('300502', 'tech'),
+    '胜宏科技': ('300476', 'tech'),
+    '神火股份': ('000933', 'cyclical'),
+    '中公高科': ('603860', 'tech'),
+    '宏达股份': ('600331', 'cyclical'),
+    '元琛科技': ('688659', 'tech'),
+    '宝丰能源': ('600989', 'cyclical'),
 }
 
 # ===== 8种模型权重 (与 report_generator.py 一致) =====
@@ -310,27 +319,41 @@ def scan_stock(name, code, model):
     return result
 
 
+def load_watchlist(path):
+    """读取 watchlist：新格式 CSV（名称,代码,模型,最后报告时间）；兼容旧格式（仅名称，查内置映射）"""
+    rows = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('名称'):
+                continue
+            parts = [p.strip() for p in line.split(',')]
+            if len(parts) >= 3 and parts[1].isdigit():
+                rows.append((parts[0], parts[1], parts[2]))
+            elif parts[0] in WATCHLIST_MAP:
+                code, model = WATCHLIST_MAP[parts[0]]
+                rows.append((parts[0], code, model))
+    return rows
+
+
 def main():
-    # 读取watchlist
+    # 读取watchlist（新格式：名称,代码,模型,最后报告时间）
     watchlist_path = os.path.join(_SKILL_DIR, 'watchlist.txt')
     if not os.path.exists(watchlist_path):
         print("错误: watchlist.txt 不存在")
         sys.exit(1)
 
-    with open(watchlist_path, 'r', encoding='utf-8') as f:
-        names = [line.strip() for line in f if line.strip()]
+    rows = load_watchlist(watchlist_path)
+    if not rows:
+        print("错误: watchlist.txt 为空或格式无法解析")
+        sys.exit(1)
 
     print(f"{'='*70}")
-    print(f"  Watchlist 估值扫描  |  {datetime.date.today()}  |  共{len(names)}只")
+    print(f"  Watchlist 估值扫描  |  {datetime.date.today()}  |  共{len(rows)}只")
     print(f"{'='*70}")
 
     results = []
-    for name in names:
-        if name not in WATCHLIST_MAP:
-            print(f"  [skip] {name}: 未配置代码映射")
-            continue
-        code, model = WATCHLIST_MAP[name]
-        print(f"  扫描 {name}({code})...", end='', flush=True)
+    for name, code, model in rows:
         r = scan_stock(name, code, model)
         results.append(r)
         if r['score'] is not None:
