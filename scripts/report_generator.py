@@ -280,7 +280,9 @@ val_data_js = 'var VALUATION_DATA = ' + json.dumps({
     'meta': {'stock': f'{STOCK_NAME}({STOCK_CODE})', 'period': f"{kline[0]['date']} ~ {kline[-1]['date']}", 'total_days': len(results), 'weights': WEIGHTS_DISPLAY, 'description': '分数0-100，越高代表越被低估',
              'code': STOCK_CODE, 'exchange': EXCHANGE, 'model_type': MODEL_TYPE,
              'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX, 'eps_growth': EPS_GROWTH,
-             'total_shares': TOTAL_SHARES},
+             'total_shares': TOTAL_SHARES, 'subtitle': SUBTITLE,
+             'dps': _REPORT_CONFIG.get('dps'),
+             'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results
 }, ensure_ascii=False, separators=(',', ':')) + ';'
 
@@ -552,7 +554,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       <button class="range-btn" data-range="all">全部</button>
     </span>
     <div id="chart-backtest" style="width:100%;height:550px;"></div>
-    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线。分数越高代表越被低估。</p>
+    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线，深绿点线为80分极度低估分界线，深红点线为20分极度高估分界线（浅绿/浅红细线为历史80th/20th百分位）。分数越高代表越被低估。</p>
   </div>
 </section>
 <section id="s4">
@@ -694,8 +696,10 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
         markLine: {{
           silent: true,
           data: [
+            {{ yAxis: 80, label: {{ formatter: '极度低估区间', position: 'insideEndTop', color: '#14532d', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#14532d', type: 'dotted', width: 2 }} }},
             {{ yAxis: 70, label: {{ formatter: '低估区间', position: 'insideEndTop', color: '#2d7d46', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#2d7d46', type: 'dashed', width: 1.5 }} }},
             {{ yAxis: 40, label: {{ formatter: '高估区间', position: 'insideEndBottom', color: '#b22222', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#b22222', type: 'dashed', width: 1.5 }} }},
+            {{ yAxis: 20, label: {{ formatter: '极度高估区间', position: 'insideEndBottom', color: '#7f1d1d', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#7f1d1d', type: 'dotted', width: 2 }} }},
             {{ yAxis: p80, label: {{ formatter: '80th百分位', position: 'insideEndTop', color: '#4ade80aa', fontSize: 10 }}, lineStyle: {{ color: '#4ade80aa', type: 'dashed', width: 1 }} }},
             {{ yAxis: p20, label: {{ formatter: '20th百分位', position: 'insideEndBottom', color: '#f87171aa', fontSize: 10 }}, lineStyle: {{ color: '#f87171aa', type: 'dashed', width: 1 }} }}
           ]
@@ -832,8 +836,10 @@ function openFullscreenChart() {{
         markLine: {{
           silent: true,
           data: [
+            {{ yAxis: 80, label: {{ formatter: '极度低估区间', position: 'insideEndTop', color: '#14532d', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#14532d', type: 'dotted', width: 2 }} }},
             {{ yAxis: 70, label: {{ formatter: '低估区间', position: 'insideEndTop', color: '#4ade80', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#4ade80', type: 'dashed', width: 1.5 }} }},
             {{ yAxis: 40, label: {{ formatter: '高估区间', position: 'insideEndBottom', color: '#f87171', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#f87171', type: 'dashed', width: 1.5 }} }},
+            {{ yAxis: 20, label: {{ formatter: '极度高估区间', position: 'insideEndBottom', color: '#7f1d1d', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#7f1d1d', type: 'dotted', width: 2 }} }},
             {{ yAxis: p80, label: {{ formatter: '80th百分位', position: 'insideEndTop', color: '#4ade80aa', fontSize: 10 }}, lineStyle: {{ color: '#4ade80aa', type: 'dashed', width: 1 }} }},
             {{ yAxis: p20, label: {{ formatter: '20th百分位', position: 'insideEndBottom', color: '#f87171aa', fontSize: 10 }}, lineStyle: {{ color: '#f87171aa', type: 'dashed', width: 1 }} }}
           ]
