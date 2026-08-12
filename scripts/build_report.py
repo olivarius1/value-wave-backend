@@ -137,6 +137,18 @@ def _run_new_format():
         metrics = compute_financial_metrics(reports)
         optional_factors = auto_fill_factors(optional_factors, metrics, model_type)
 
+    # 最新报告期净利润同比（盈利动能，用于报告提示注释；--growth 可覆盖；无数据时回退CAGR）
+    latest_yoy = None
+    latest_report_label = '最新报告期'
+    if args.growth is not None:
+        latest_yoy = args.growth
+        latest_report_label = '手动预期'
+    elif reports and reports[0].get('profit_yoy'):
+        r0 = reports[0]
+        latest_yoy = r0['profit_yoy']
+        latest_report_label = f"{r0.get('report_date', '')[:4]} {r0.get('report_type_cn', '最新报告期')}"
+        print(f"  [auto] 最新报告期增速 = {latest_yoy:.0%} ({latest_report_label}净利润同比)")
+
     # 动态DPS股息率：若提供每股分红且未手动指定股息率，自动换算当前股息率（保证因子权重生效）
     if args.dps and args.dps > 0 and 'dividend_yield' not in optional_factors:
         if qt_price and qt_price > 0:
@@ -157,6 +169,8 @@ def _run_new_format():
         'pb_min': pb_min,
         'pb_max': pb_max,
         'eps_growth': eps_growth,
+        'latest_yoy': latest_yoy,
+        'latest_report_label': latest_report_label,
         'revenue': revenue or '0',
         'net_profit': net_profit or '0',
         'gross_margin': gross_margin_str,

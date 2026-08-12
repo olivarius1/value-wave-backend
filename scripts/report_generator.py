@@ -314,14 +314,22 @@ else: status_text, status_class = '极度高估', 'fs-score-low'
 
 # ===== 高估但高回报/高成长 提示注释（4.3 校验扩展，2026-08）=====
 # 当评分处于高估档，但公司股息率高或盈利增速快时，提示估值中枢可能上移，避免机械采信高估结论
+# 增速判据优先最新报告期同比（盈利动能，方案A 2026-08），数据缺失时回退历史CAGR（EPS_GROWTH）
 _caveat_html = ''
 _dy = factor_values.get('dividend_yield', 0) or 0
-if latest['score'] < 40 and (_dy >= 0.03 or EPS_GROWTH > 0.20):
+_latest_yoy = _cfg.get('latest_yoy') if _cfg is not None else None
+_report_label = (_cfg.get('latest_report_label', '最新报告期') if _cfg is not None else '最新报告期')
+_yoy = _latest_yoy if _latest_yoy else EPS_GROWTH
+if latest['score'] < 40 and (_dy >= 0.03 or _yoy > 0.20):
     _notes = []
     if _dy >= 0.03:
         _notes.append(f'股息率约 {_dy*100:.1f}%，股东回报（分红/回购）正在提升')
-    if EPS_GROWTH > 0.20:
-        _notes.append(f'盈利增速约 {EPS_GROWTH*100:.0f}%，高成长可能消化当前估值')
+    if _yoy > 0.20:
+        if _yoy > 5:
+            # 扭亏为盈/低基数导致同比异常放大，仅定性描述避免误导
+            _notes.append(f'盈利大幅增长（{_report_label}同比，低基数/扭亏），高成长可能消化当前估值')
+        else:
+            _notes.append(f'盈利增速约 {_yoy*100:.0f}%（{_report_label}同比），高成长可能消化当前估值')
     _caveat_html = (
         '<div style="margin-top:10px;padding:10px 14px;border:1px solid #f59e0b;'
         'border-left:4px solid #f59e0b;background:#fffbeb;border-radius:6px;font-size:0.92rem;">'
