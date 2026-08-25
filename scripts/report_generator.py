@@ -284,7 +284,8 @@ for idx_r, r in enumerate(results):
         })
         break
 
-val_data_js = 'var VALUATION_DATA = ' + json.dumps({
+# 数据中间件：同一份结构化数据同时内嵌 HTML（file:// 单文件可开）并落盘 JSON（汇总/复用）
+val_data = {
     'meta': {'stock': f'{STOCK_NAME}({STOCK_CODE})', 'period': f"{kline[0]['date']} ~ {kline[-1]['date']}", 'total_days': len(results), 'weights': WEIGHTS_DISPLAY, 'description': '分数0-100，越高代表越被低估',
              'code': STOCK_CODE, 'exchange': EXCHANGE, 'model_type': MODEL_TYPE,
              'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX, 'eps_growth': EPS_GROWTH,
@@ -292,7 +293,8 @@ val_data_js = 'var VALUATION_DATA = ' + json.dumps({
              'dps': _REPORT_CONFIG.get('dps'),
              'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results
-}, ensure_ascii=False, separators=(',', ':')) + ';'
+}
+val_data_js = 'var VALUATION_DATA = ' + json.dumps(val_data, ensure_ascii=False, separators=(',', ':')) + ';'
 
 # 读取ECharts
 echarts_path = os.path.join(_SKILL_DIR, '_shared', 'js', 'echarts.min.js')
@@ -316,7 +318,6 @@ weights_display_lines = WEIGHTS_DISPLAY.replace(' + ', '\n             + ')
 
 # ===== 确定评分状态 =====
 latest = results[-1]
-_est_score_disp = latest.get('est_score') if latest.get('est_score') is not None else '-'
 # rank映射模式下展示当前PE/PB历史分位（触顶饱和修复后极值区仍有区分度）
 _pct_disp = ''
 if latest.get('pe_pct') is not None:
@@ -576,11 +577,11 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <h2 class="section-num">Section 04</h2>
   <h2>关键时点估值分析</h2>
   <div class="table-wrap"><table>
-    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>估值分</th><th>状态</th></tr></thead>
+    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>状态</th></tr></thead>
     <tbody id="keyDateTable"></tbody>
   </table></div>
   <h3>最新估值状态</h3>
-  <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}） | 纯估值分（仅估值因子）：<strong>{_est_score_disp}</strong></p>
+  <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}）</p>
   <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元{_pct_disp}</p>
   <p>状态：<strong>{status_text}</strong></p>
   {_caveat_html}
@@ -684,7 +685,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>纯估值分: <strong>' + (d.est_score == null ? '-' : d.est_score) + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
     legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
@@ -752,7 +753,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       if (keyDates.indexOf(data[i].date) !== -1 || added < 4) {{
         var r = data[i];
         var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 40 ? '无交易价值' : r.score >= 20 ? '高估' : '极度高估';
-        tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + (r.est_score == null ? '-' : r.est_score) + '</td><td>' + st + '</td></tr>';
+        tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + st + '</td></tr>';
         added++;
       }}
     }}
@@ -824,7 +825,7 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>纯估值分: <strong style="color:#fff">' + (d.est_score == null ? '-' : d.est_score) + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
     legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
@@ -903,4 +904,10 @@ document.addEventListener('fullscreenchange', function() {{
 with open(OUTPUT, 'w', encoding='utf-8') as f:
     f.write(html)
 
+# 数据中间件：JSON 与 HTML 由同一数据源生成，口径绝对一致，供汇总报告/外部复用
+json_path = os.path.splitext(OUTPUT)[0] + '.json'
+with open(json_path, 'w', encoding='utf-8') as f:
+    json.dump(val_data, f, ensure_ascii=False, separators=(',', ':'))
+
 print(f"  -> {OUTPUT} ({os.path.getsize(OUTPUT)/1024:.0f}KB)")
+print(f"  -> {json_path} ({os.path.getsize(json_path)/1024:.0f}KB)")

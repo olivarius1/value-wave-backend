@@ -89,13 +89,6 @@ OPTIONAL_FACTOR_KEYS = [
     'brand_premium', 'order_growth', 'revenue_growth',
 ]
 
-# 估值类因子集合：用于计算“纯估值分”（剥离量能/波动率等情绪因子后的便宜度）
-# pe/pb/peg 为价格估值；dividend_yield 股息率与估值同向；nav_discount NAV折价、commodity_dev 周期位置
-ESTIMATION_FACTORS = {
-    'pe', 'pb', 'peg', 'dividend_yield', 'nav_discount', 'commodity_dev',
-}
-
-
 # ===== 基础因子评分函数（价格/K线可计算，显式传参）=====
 
 def score_pe(pe, pe_min, pe_max):
@@ -652,22 +645,13 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
             total += s * w
 
         total = round(total, 2)
-        # 纯估值分：仅估值类因子加权归一化（剥离量能/波动率/MA等情绪因子），
-        # 回答“当前到底多便宜”，避免放量下跌等情绪扰动掩盖估值改善（星宇案例）
-        est_w = 0.0
-        est_total = 0.0
-        for fk, w in cur_weights.items():
-            if w > 0.001 and fk in ESTIMATION_FACTORS:
-                est_w += w
-                est_total += factor_scores.get(fk, 50) * w
-        est_score = round(est_total / est_w, 2) if est_w > 0 else None
-        # 当前PE/PB的历史百分位（rank模式），供报告展示“处于历史X%分位”
+        # 当前PE/PB的历史百分位（rank模式），避免固定区间映射在极值区触顶饱和（满分无区分度）
         _pe_pct = round(bisect_right(_pe_rank_sorted, pe_ttm) / len(_pe_rank_sorted) * 100) if (use_rank_pe and _pe_rank_sorted and pe_ttm > 0) else None
         _pb_pct = round(bisect_right(_pb_rank_sorted, pb) / len(_pb_rank_sorted) * 100) if (use_rank_pb and _pb_rank_sorted and pb > 0) else None
         result_entry = {
             'date': row['date'], 'close': close, 'pe_ttm': round(pe_ttm, 2), 'pb': round(pb, 2),
             'market_cap': round(mcap, 2), 'ma20': round(ma20, 2), 'ma60': round(ma60, 2),
-            'score': total, 'est_score': est_score, 'pe_pct': _pe_pct, 'pb_pct': _pb_pct,
+            'score': total, 'pe_pct': _pe_pct, 'pb_pct': _pb_pct,
             'is_intraday': is_intraday,
         }
         # 只记录权重>0的因子分数

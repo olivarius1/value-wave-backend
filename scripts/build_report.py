@@ -12,6 +12,13 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
 
+# 人工校准区间（盈利 regime 切换后全10年自动区间失真，见 templates/growth_params.md 8.4c）：
+# 命中时强制线性映射（use_rank=False），命令行 --pe/--pb 优先级更高
+MANUAL_RANGES = {
+    '601899': {'pe': (8.3, 18.0), 'pb': (2.35, 5.1)},   # 紫金矿业：净利5年增长20倍，全10年区间致PE/PB双0分硬截断
+}
+
+
 def _is_old_format():
     """检测是否为旧格式（16+位置参数，第2个参数不含--）"""
     if len(sys.argv) < 17:
@@ -122,22 +129,32 @@ def _run_new_format():
     # 3. 获取历年EPS/BPS序列（用于PE/PB区间计算 & 真实历史PE评分口径）
     pershare_data = fetch_pershare_data(stock_code, exchange)
 
-    # 计算PE/PB区间（如果用户未手动指定）
+    # 计算PE/PB区间（命令行手动指定 > MANUAL_RANGES 校准区间 > 自动10th/90th百分位）
+    manual_ranges = MANUAL_RANGES.get(stock_code, {})
     if args.pe:
         pe_min, pe_max = args.pe
         print(f"  PE区间: {pe_min} ~ {pe_max} (手动指定)")
+    elif 'pe' in manual_ranges:
+        pe_min, pe_max = manual_ranges['pe']
+        print(f"  PE区间: {pe_min} ~ {pe_max} (校准区间)")
+        if 'pb' not in manual_ranges and not args.pb:
+            val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
+            pb_min, pb_max = val_range['pb_min'], val_range['pb_max']
     else:
         print(f"  计算历史PE/PB百分位区间...")
         val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
         pe_min = val_range['pe_min']
         pe_max = val_range['pe_max']
-        if not args.pb:
+        if not args.pb and 'pb' not in manual_ranges:
             pb_min = val_range['pb_min']
             pb_max = val_range['pb_max']
 
     if args.pb:
         pb_min, pb_max = args.pb
         print(f"  PB区间: {pb_min} ~ {pb_max} (手动指定)")
+    elif 'pb' in manual_ranges:
+        pb_min, pb_max = manual_ranges['pb']
+        print(f"  PB区间: {pb_min} ~ {pb_max} (校准区间)")
     elif not args.pe:
         pass  # 已从 val_range 获取
     else:
@@ -184,9 +201,9 @@ def _run_new_format():
         'pe_max': pe_max,
         'pb_min': pb_min,
         'pb_max': pb_max,
-        # PE/PB评分映射模式：手动指定区间时保留线性映射（人工校准锚点），否则用历史百分位rank
-        'use_rank_pe': args.pe is None,
-        'use_rank_pb': args.pb is None,
+        # PE/PB评分映射模式：手动指定或校准区间时保留线性映射（人工锚点），否则用历史百分位rank（避免触顶饱和）
+        'use_rank_pe': args.pe is None and 'pe' not in manual_ranges,
+        'use_rank_pb': args.pb is None and 'pb' not in manual_ranges,
         'eps_growth': eps_growth,
         'latest_yoy': latest_yoy,
         'latest_report_label': latest_report_label,

@@ -1,26 +1,21 @@
 #!/usr/bin/env python3
 """
-估值汇总报告生成器
-- 扫描 watchlist.txt（唯一股票池，batch_growth 为历史中间产物已移除）逐只分析
+估值汇总报告生成器（数据中间件模式）
+- 股票池唯一来源 watchlist.txt（44只）
+- 数据来源：各股报告 JSON（local_reports/*-valuation.json），与个股报告同一份数据，
+  分数口径绝对一致（rank百分位映射、不复权PE、披露滞后等全部沿用，无重复算分）
 - 计算每只股票当前分数在历史中的百分位
 - 筛选百分位 > 85%（低估区，分数处于历史高位）或 < 40%（高估区，分数处于历史低位）
-- 输出单页HTML汇总表
+- 输出单页HTML汇总表；无网络调用，秒级完成
 """
 import csv
+import datetime
 import json
 import os
 import sys
-import datetime
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _SKILL_DIR = os.path.dirname(_SCRIPT_DIR)
-sys.path.insert(0, _SCRIPT_DIR)
-
-from kline_cache import get_kline, CACHE_DIR, load_cache
-from financial_fetcher import (
-    fetch_pershare_data, compute_valuation_range,
-    fetch_financial_reports, compute_financial_metrics, auto_fill_factors
-)
 
 # ===== 股票池：唯一来源 watchlist.txt（名称,代码,模型,最后报告时间） =====
 
@@ -39,184 +34,52 @@ def _load_watchlist():
 
 ALL_STOCKS = _load_watchlist()
 
-# ===== 模型权重 =====
+# ===== 模型中文名（仅展示用，权重定义在 scoring_engine.MODEL_PRESETS） =====
 MODEL_NAMES = {
     'staples': '必选消费', 'discretionary': '可选消费', 'tech': '科技制造',
     'cyclical': '周期资源', 'soe': '央企基建', 'bank': '银行保险',
     'realestate': '地产', 'pharma': '医药消费',
 }
-MODEL_WEIGHTS = {
-    'staples':       {'pe': 0.28, 'pb': 0.12, 'peg': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.10, 'margin_stability': 0.10},
-    'discretionary': {'pe': 0.22, 'pb': 0.12, 'peg': 0.22, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'brand_premium': 0.11},
-    'tech':          {'pe': 0.20, 'pb': 0.12, 'peg': 0.25, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'rd_ratio': 0.10},
-    'cyclical':      {'pe': 0.25, 'pb': 0.12, 'commodity_dev': 0.20, 'ma': 0.15, 'vol': 0.10, 'vola': 0.10, 'capacity_util': 0.08},
-    'soe':           {'pe': 0.15, 'pb': 0.18, 'dividend_yield': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'order_growth': 0.15, 'roe': 0.04},
-    'bank':          {'pe': 0.00, 'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
-    'realestate':    {'pe': 0.00, 'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
-    'pharma':        {'pe': 0.20, 'pb': 0.10, 'peg': 0.25, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'revenue_growth': 0.17},
-}
-OPTIONAL_KEYS = ['commodity_dev','capacity_util','roe','dividend_yield','npl_ratio',
-                 'nav_discount','clearance_rate','leverage','rd_ratio',
-                 'margin_stability','brand_premium','order_growth','revenue_growth']
-
-
-# ===== 评分函数 =====
-def score_pe(pe, pe_min, pe_max):
-    if pe <= 0: return 50
-    return (1 - max(0, min(1, (pe - pe_min) / (pe_max - pe_min)))) * 100
-
-def score_pb(pb, pb_min, pb_max):
-    if pb <= 0: return 50
-    return (1 - max(0, min(1, (pb - pb_min) / (pb_max - pb_min)))) * 100
-
-def score_peg(pe, growth):
-    if pe <= 0 or growth <= 0: return 50
-    peg = pe / (growth * 100)
-    if peg < 0.8: return 95
-    elif peg < 1.0: return 80
-    elif peg < 1.2: return 65
-    elif peg < 1.5: return 50
-    elif peg < 2.0: return 35
-    else: return 20
-
-def score_ma(close, ma20, ma60):
-    if ma20 <= 0: return 50
-    d20 = (close - ma20) / ma20 * 100
-    d60 = (close - ma60) / ma60 * 100 if ma60 > 0 else 0
-    return max(0, min(100, 50 - d20*3)) * 0.6 + max(0, min(100, 50 - d60*2.5)) * 0.4
-
-def score_vol(volume, vol_ma20):
-    if vol_ma20 <= 0: return 50
-    r = volume / vol_ma20
-    if r < 0.5: return 85
-    elif r < 0.8: return 70
-    elif r < 1.2: return 55
-    elif r < 1.5: return 40
-    elif r < 2.0: return 30
-    else: return 20
-
-def score_vola(close, high, low):
-    if close <= 0: return 50
-    v = (high - low) / close
-    if v < 0.01: return 85
-    elif v < 0.02: return 70
-    elif v < 0.03: return 55
-    elif v < 0.05: return 40
-    else: return 20
-
-
-def compute_score_series(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_max,
-                         eps_growth, model_type, opt_factors):
-    """计算整条K线的分数序列，返回 [score, ...]"""
-    weights = dict(MODEL_WEIGHTS.get(model_type, MODEL_WEIGHTS['cyclical']))
-    # 权重重分配
-    active_w = {}
-    missing_w = 0
-    for fk, w in weights.items():
-        if fk in OPTIONAL_KEYS:
-            if opt_factors.get(fk) is not None:
-                active_w[fk] = w
-            else:
-                missing_w += w
-        else:
-            active_w[fk] = w
-    if missing_w > 0 and active_w:
-        tw = sum(active_w.values())
-        if tw > 0:
-            for fk in active_w:
-                active_w[fk] += active_w[fk] / tw * missing_w
-    total_w = sum(active_w.values())
-    if total_w > 0:
-        active_w = {k: v/total_w for k, v in active_w.items()}
-
-    n = len(kline_data)
-    scores = []
-    for i in range(n):
-        row = kline_data[i]
-        close = float(row[2])
-        high = float(row[3])
-        low = float(row[4])
-        volume = float(row[5])
-        # MA
-        ma20 = sum(float(kline_data[j][2]) for j in range(max(0,i-19), i+1)) / min(20, i+1)
-        ma60 = sum(float(kline_data[j][2]) for j in range(max(0,i-59), i+1)) / min(60, i+1)
-        vol_ma20 = sum(float(kline_data[j][5]) for j in range(max(0,i-19), i+1)) / min(20, i+1)
-        # 历史PE/PB推算
-        cur_pe = close / price * pe if price > 0 else 0
-        cur_pb = close / price * pb if price > 0 else 0
-
-        total = 0
-        for fk, w in active_w.items():
-            if w < 0.001: continue
-            if fk == 'pe': s = score_pe(cur_pe, pe_min, pe_max)
-            elif fk == 'pb': s = score_pb(cur_pb, pb_min, pb_max)
-            elif fk == 'peg': s = score_peg(cur_pe, eps_growth)
-            elif fk == 'ma': s = score_ma(close, ma20, ma60)
-            elif fk == 'vol': s = score_vol(volume, vol_ma20)
-            elif fk == 'vola': s = score_vola(close, high, low)
-            else: s = 50  # 可选因子缺失=中性
-            total += s * w
-        scores.append(round(total, 2))
-    return scores
 
 
 def analyze_stock(code, name, model):
-    """分析单只股票，返回结果dict或None（增量刷新缓存以确保最新数据）"""
-    exchange = 'sh' if code.startswith('6') else 'sz'
-    # 增量刷新K线缓存：今日已更新则0次API调用，否则仅1次增量调用
-    fresh = get_kline(code, exchange)
-    kline_data = fresh.get('kline') or []
-    if len(kline_data) < 60:
+    """从个股报告 JSON 读取结果，口径与个股报告绝对一致（同一份数据，无重复算分）"""
+    json_path = os.path.join(_SKILL_DIR, 'local_reports', f'{name}{code}-valuation.json')
+    if not os.path.exists(json_path):
         return None
-    pe = fresh.get('pe', 0)
-    pb = fresh.get('pb', 0)
-    price = fresh.get('price', 0)
-
-    # PE/PB区间
-    pershare = fetch_pershare_data(code, exchange)
-    val_range = compute_valuation_range(kline_data, pershare, pe, pb)
-    pe_min, pe_max = val_range['pe_min'], val_range['pe_max']
-    pb_min, pb_max = val_range['pb_min'], val_range['pb_max']
-
-    # 增速 + 可选因子
-    eps_growth = 0.08
-    opt_factors = {}
-    reports = fetch_financial_reports(code, exchange, max_reports=10)
-    if reports:
-        metrics = compute_financial_metrics(reports)
-        opt_factors = auto_fill_factors(opt_factors, metrics, model)
-        annuals = [r for r in reports if r['report_type'] == 'annual']
-        if len(annuals) >= 2:
-            lp = annuals[0]['net_profit']
-            oi = min(len(annuals)-1, 4)
-            op = annuals[oi]['net_profit']
-            if lp > 0 and op > 0 and oi > 0:
-                eps_growth = round((lp/op)**(1.0/oi) - 1, 4)
-
-    # 计算全序列分数
-    scores = compute_score_series(kline_data, pe, pb, price,
-                                  pe_min, pe_max, pb_min, pb_max,
-                                  eps_growth, model, opt_factors)
+    try:
+        with open(json_path, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    meta, entries = data.get('meta', {}), data.get('data') or []
+    if not entries:
+        return None
+    scores = [r['score'] for r in entries if r.get('score') is not None]
     if not scores:
         return None
-
-    latest_score = scores[-1]
+    latest = entries[-1]
+    latest_score = latest.get('score')
+    if latest_score is None:
+        return None
     # 百分位：当前分在历史中的位置
     below = sum(1 for s in scores if s <= latest_score)
     percentile = round(below / len(scores) * 100, 1)
 
     return {
         'code': code, 'name': name, 'model': model,
-        'price': price, 'pe': pe, 'pb': pb,
+        'price': latest.get('close') or 0,
+        'pe': latest.get('pe_ttm') or 0,
+        'pb': latest.get('pb') or 0,
         'score': latest_score,
         'percentile': percentile,
         'score_min': round(min(scores), 1),
         'score_max': round(max(scores), 1),
         'score_avg': round(sum(scores)/len(scores), 1),
-        'pe_range': f"{pe_min}~{pe_max}",
-        'pb_range': f"{pb_min}~{pb_max}",
+        'pe_range': f"{meta.get('pe_min')}~{meta.get('pe_max')}",
+        'pb_range': f"{meta.get('pb_min')}~{meta.get('pb_max')}",
         'days': len(scores),
-        'last_date': kline_data[-1][0],
+        'last_date': latest.get('date', ''),
     }
 
 
@@ -296,7 +159,7 @@ tr:hover {{ background:#f8f9ff; }}
 </head>
 <body>
 <h1>估值汇总筛选报告</h1>
-<div class="meta">生成时间: {now} | 数据截至: {results[0]['last_date'] if results else '?'} | 覆盖: {len(results)}只股票</div>
+<div class="meta">生成时间: {now} | 数据截至: {results[0]['last_date'] if results else '?'} | 覆盖: {len(results)}只股票 | 数据来源: 个股报告JSON（口径一致）</div>
 
 <div class="summary">
   <div class="stat"><div class="val">{len(results)}</div><div class="lbl">已计算股票</div></div>
@@ -331,17 +194,14 @@ def main():
 
     results = []
     for code, (name, model) in sorted(ALL_STOCKS.items()):
-        cache = load_cache(code)
-        if not cache or not cache.get('data'):
-            continue
-        print(f"  分析 {name}({code})...", end='', flush=True)
+        print(f"  读取 {name}({code})...", end='', flush=True)
         try:
             r = analyze_stock(code, name, model)
             if r:
                 results.append(r)
                 print(f" 分数={r['score']:.1f} 百分位={r['percentile']:.0f}%")
             else:
-                print(" 数据不足")
+                print(" 无报告JSON（先运行 build_report 生成）")
         except Exception as e:
             print(f" 失败: {e}")
 
