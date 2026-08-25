@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 估值汇总报告生成器
-- 扫描所有已缓存股票（watchlist + batch_growth 合并去重）
+- 扫描 watchlist.txt（唯一股票池，batch_growth 为历史中间产物已移除）逐只分析
 - 计算每只股票当前分数在历史中的百分位
 - 筛选百分位 > 85%（低估区，分数处于历史高位）或 < 40%（高估区，分数处于历史低位）
 - 输出单页HTML汇总表
 """
+import csv
 import json
 import os
 import sys
@@ -21,73 +22,22 @@ from financial_fetcher import (
     fetch_financial_reports, compute_financial_metrics, auto_fill_factors
 )
 
-# ===== 合并股票池 (watchlist + batch_growth 去重) =====
-ALL_STOCKS = {
-    # watchlist
-    '600938': ('中国海油', 'cyclical'),
-    '601899': ('紫金矿业', 'cyclical'),
-    '002895': ('川恒股份', 'cyclical'),
-    '600309': ('万华化学', 'cyclical'),
-    '601799': ('星宇股份', 'discretionary'),
-    '000807': ('云铝股份', 'cyclical'),
-    '600096': ('云天化', 'cyclical'),
-    '601766': ('中国中车', 'soe'),
-    '601668': ('中国建筑', 'soe'),
-    '600036': ('招商银行', 'bank'),
-    '601318': ('中国平安', 'bank'),
-    '300475': ('香农芯创', 'tech'),
-    '603920': ('世运电路', 'tech'),
-    '002384': ('东山精密', 'tech'),
-    '600061': ('国投资本', 'bank'),
-    '601860': ('紫金银行', 'bank'),
-    '002775': ('文科股份', 'soe'),
-    '600346': ('恒力石化', 'cyclical'),
-    '000792': ('盐湖股份', 'cyclical'),
-    '300164': ('通源石油', 'cyclical'),
-    '000728': ('国元证券', 'bank'),
-    '000630': ('铜陵有色', 'cyclical'),
-    '601088': ('中国神华', 'soe'),
-    '600011': ('华能国际', 'soe'),
-    '600887': ('伊利股份', 'staples'),
-    '601857': ('中国石油', 'cyclical'),
-    '601225': ('陕西煤业', 'cyclical'),
-    '600503': ('华丽家族', 'realestate'),
-    '002939': ('长城证券', 'bank'),
-    '300014': ('亿纬锂能', 'tech'),
-    '301032': ('新柴股份', 'cyclical'),
-    '000338': ('潍柴动力', 'cyclical'),
-    '300274': ('阳光电源', 'tech'),
-    '603588': ('高能环境', 'soe'),
-    # batch_growth 额外
-    '603899': ('晨光股份', 'staples'),
-    '603288': ('海天味业', 'staples'),
-    '603345': ('安井食品', 'staples'),
-    '000895': ('双汇发展', 'staples'),
-    '601888': ('中国中免', 'discretionary'),
-    '600519': ('贵州茅台', 'discretionary'),
-    '600809': ('山西汾酒', 'discretionary'),
-    '000333': ('美的集团', 'discretionary'),
-    '601689': ('拓普集团', 'tech'),
-    '688041': ('海光信息', 'tech'),
-    '600584': ('长电科技', 'tech'),
-    '603078': ('江化微', 'tech'),
-    '002398': ('垒知集团', 'soe'),
-    '688083': ('中望软件', 'tech'),
-    '601600': ('中国铝业', 'cyclical'),
-    '601919': ('中远海控', 'cyclical'),
-    '600377': ('宁沪高速', 'soe'),
-    '600941': ('中国移动', 'soe'),
-    '601816': ('京沪高铁', 'soe'),
-    '601398': ('工商银行', 'bank'),
-    '002142': ('宁波银行', 'bank'),
-    '600030': ('中信证券', 'bank'),
-    '600048': ('保利发展', 'realestate'),
-    '600276': ('恒瑞医药', 'pharma'),
-    '600436': ('片仔癀', 'pharma'),
-    '300760': ('迈瑞医疗', 'pharma'),
-    '603259': ('药明康德', 'pharma'),
-    '300015': ('爱尔眼科', 'pharma'),
-}
+# ===== 股票池：唯一来源 watchlist.txt（名称,代码,模型,最后报告时间） =====
+
+def _load_watchlist():
+    """读取 watchlist.txt 作为唯一股票池，与批量重跑/scan_watchlist 同源，避免硬编码漂移"""
+    stocks = {}
+    path = os.path.join(_SKILL_DIR, 'watchlist.txt')
+    with open(path, encoding='utf-8') as f:
+        reader = csv.reader(f)
+        next(reader, None)  # 跳过表头
+        for row in reader:
+            if len(row) >= 3 and row[0].strip():
+                stocks[row[1].strip()] = (row[0].strip(), row[2].strip())
+    return stocks
+
+
+ALL_STOCKS = _load_watchlist()
 
 # ===== 模型权重 =====
 MODEL_NAMES = {
