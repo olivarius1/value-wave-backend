@@ -184,6 +184,9 @@ def _run_new_format():
         'pe_max': pe_max,
         'pb_min': pb_min,
         'pb_max': pb_max,
+        # PE/PB评分映射模式：手动指定区间时保留线性映射（人工校准锚点），否则用历史百分位rank
+        'use_rank_pe': args.pe is None,
+        'use_rank_pb': args.pb is None,
         'eps_growth': eps_growth,
         'latest_yoy': latest_yoy,
         'latest_report_label': latest_report_label,

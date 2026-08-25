@@ -18,6 +18,8 @@
 - compute_daily_scores：每日估值评分序列计算（核心）
 """
 
+from bisect import bisect_right
+
 # ===== 8种模型权重预设 =====
 MODEL_PRESETS = {
     'staples': {
@@ -116,6 +118,17 @@ def score_pb(pb, pb_min, pb_max):
     p = (pb - pb_min) / (pb_max - pb_min)
     p = max(0, min(1, p))
     return max(5, (1 - p) * 100)
+
+
+def score_pe_rank(percentile):
+    """PE历史百分位rank评分：percentile 0%(历史最便宜)->100分，100%(最贵)->5分。
+    替代固定区间线性映射：极值不截断、永不触顶，保持区分度（解决“股价更便宜但分数不变”饱和）"""
+    return max(5, (1 - percentile) * 100)
+
+
+def score_pb_rank(percentile):
+    """PB历史百分位rank评分：percentile 0%(历史最便宜)->100分，100%(最贵)->5分"""
+    return max(5, (1 - percentile) * 100)
 
 
 def score_peg(pe, eps_growth):
@@ -510,6 +523,9 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
             'bps_series': 可选 dict {year: bps}，同上用于PB,
             'pe_close_series': 可选 dict {date: 不复权收盘价}，提供则 PE/PB 用当日真实价计算
                           （修复前复权历史价缩放失真）；缺失日期回退 kline close,
+            'use_rank_pe': 可选 bool，True 时 PE 因子用历史百分位rank映射（同口径序列），
+                          False 用固定区间线性映射（手动区间时保留），
+            'use_rank_pb': 可选 bool，同上用于PB,
             'no_pe_fallback': 可选 bool，True 时无历史EPS/BPS的日期 PE/PB 计中性分0，
                           禁用“当前EPS反推”（回测用，消除审计#5未来函数）,
         }
@@ -530,6 +546,45 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
     bps_series = params.get('bps_series')  # {year: bps} 或 None
     pe_close_series = params.get('pe_close_series')  # {date: 不复权收盘价} 或 None
     no_pe_fallback = params.get('no_pe_fallback', False)  # 回测禁用“当前EPS反推”
+    use_rank_pe = params.get('use_rank_pe', False)  # PE因子：历史百分位rank映射
+    use_rank_pb = params.get('use_rank_pb', False)  # PB因子：历史百分位rank映射
+
+    def _calc_pe_pb(date_str, close):
+        """当日真实PE/PB：披露滞后EPS/BPS + 不复权真实价（rank预收集与主循环共用同一口径）"""
+        h_eps = _series_effective(eps_series, date_str)
+        h_bps = _series_effective(bps_series, date_str)
+        p_price = close
+        if pe_close_series:
+            p_price = pe_close_series.get(date_str) or close
+        if h_eps and h_eps > 0:
+            _pe = p_price / h_eps
+        elif no_pe_fallback:
+            _pe = 0  # 缺历史EPS：PE因子计中性分，不引入未来信息
+        else:
+            _pe = p_price / latest_price * latest_pe if latest_price > 0 else 0
+        if h_bps and h_bps > 0:
+            _pb = p_price / h_bps
+        elif no_pe_fallback:
+            _pb = 0
+        else:
+            _pb = p_price / latest_price * latest_pb if latest_price > 0 else 0
+        return _pe, _pb
+
+    # rank 百分位预收集：全历史序列排序，主循环对每个日期二分求百分位
+    # （与主循环同口径计算，避免区间口径不一致；解决固定区间截断导致的触顶饱和）
+    _pe_rank_sorted = _pb_rank_sorted = None
+    if use_rank_pe or use_rank_pb:
+        _pe_hist, _pb_hist = [], []
+        for _r in kline:
+            _pe, _pb = _calc_pe_pb(_r['date'], _r['close'])
+            if use_rank_pe and _pe > 0:
+                _pe_hist.append(_pe)
+            if use_rank_pb and _pb > 0:
+                _pb_hist.append(_pb)
+        if use_rank_pe and _pe_hist:
+            _pe_rank_sorted = sorted(_pe_hist)
+        if use_rank_pb and _pb_hist:
+            _pb_rank_sorted = sorted(_pb_hist)
 
     n = len(kline)
     results = []
@@ -542,26 +597,7 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
 
         # PE/PB：优先用真实历史EPS/BPS（按披露时点生效），否则回退到恒定当前EPS反推
         # （no_pe_fallback=True 时无历史数据计中性分，回测消除未来函数）
-        hist_eps = _series_effective(eps_series, row['date'])
-        hist_bps = _series_effective(bps_series, row['date'])
-        # 当日真实交易价（不复权），缺失时回退前复权收盘价
-        pe_price = close
-        if pe_close_series:
-            pe_price = pe_close_series.get(row['date']) or close
-
-        if hist_eps and hist_eps > 0:
-            pe_ttm = pe_price / hist_eps
-        elif no_pe_fallback:
-            pe_ttm = 0  # 缺历史EPS：PE因子计中性分，不引入未来信息
-        else:
-            pe_ttm = pe_price / latest_price * latest_pe if latest_price > 0 else 0
-
-        if hist_bps and hist_bps > 0:
-            pb = pe_price / hist_bps
-        elif no_pe_fallback:
-            pb = 0
-        else:
-            pb = pe_price / latest_price * latest_pb if latest_price > 0 else 0
+        pe_ttm, pb = _calc_pe_pb(row['date'], close)
 
         mcap = close * total_shares
 
@@ -583,9 +619,15 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
                 factor_scores[fk] = 0
                 continue
             if fk == 'pe':
-                s = score_pe(pe_ttm, pe_min, pe_max)
+                if use_rank_pe and _pe_rank_sorted and pe_ttm > 0:
+                    s = score_pe_rank(bisect_right(_pe_rank_sorted, pe_ttm) / len(_pe_rank_sorted))
+                else:
+                    s = score_pe(pe_ttm, pe_min, pe_max)
             elif fk == 'pb':
-                s = score_pb(pb, pb_min, pb_max)
+                if use_rank_pb and _pb_rank_sorted and pb > 0:
+                    s = score_pb_rank(bisect_right(_pb_rank_sorted, pb) / len(_pb_rank_sorted))
+                else:
+                    s = score_pb(pb, pb_min, pb_max)
             elif fk == 'peg':
                 s = score_peg(pe_ttm, eps_growth)
             elif fk == 'ma':
@@ -619,10 +661,13 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
                 est_w += w
                 est_total += factor_scores.get(fk, 50) * w
         est_score = round(est_total / est_w, 2) if est_w > 0 else None
+        # 当前PE/PB的历史百分位（rank模式），供报告展示“处于历史X%分位”
+        _pe_pct = round(bisect_right(_pe_rank_sorted, pe_ttm) / len(_pe_rank_sorted) * 100) if (use_rank_pe and _pe_rank_sorted and pe_ttm > 0) else None
+        _pb_pct = round(bisect_right(_pb_rank_sorted, pb) / len(_pb_rank_sorted) * 100) if (use_rank_pb and _pb_rank_sorted and pb > 0) else None
         result_entry = {
             'date': row['date'], 'close': close, 'pe_ttm': round(pe_ttm, 2), 'pb': round(pb, 2),
             'market_cap': round(mcap, 2), 'ma20': round(ma20, 2), 'ma60': round(ma60, 2),
-            'score': total, 'est_score': est_score,
+            'score': total, 'est_score': est_score, 'pe_pct': _pe_pct, 'pb_pct': _pb_pct,
             'is_intraday': is_intraday,
         }
         # 只记录权重>0的因子分数

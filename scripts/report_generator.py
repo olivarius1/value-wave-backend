@@ -260,6 +260,9 @@ _score_params = {
     'eps_series': _eps_series, 'bps_series': _bps_series,
     # 不复权真实交易价：历史 PE/PB 用当日真实价计算（前复权价随除权整体缩放会失真）
     'pe_close_series': _raw_close_map,
+    # PE/PB评分映射模式：手动区间保留线性映射，否则历史百分位rank（触顶饱和修复）
+    'use_rank_pe': _cfg.get('use_rank_pe', False) if _cfg is not None else False,
+    'use_rank_pb': _cfg.get('use_rank_pb', False) if _cfg is not None else False,
     'dps': _REPORT_CONFIG.get('dps'),
 }
 results = compute_daily_scores(kline, active_weights, factor_values, _score_params)
@@ -314,6 +317,12 @@ weights_display_lines = WEIGHTS_DISPLAY.replace(' + ', '\n             + ')
 # ===== 确定评分状态 =====
 latest = results[-1]
 _est_score_disp = latest.get('est_score') if latest.get('est_score') is not None else '-'
+# rank映射模式下展示当前PE/PB历史分位（触顶饱和修复后极值区仍有区分度）
+_pct_disp = ''
+if latest.get('pe_pct') is not None:
+    _pct_disp = f" | PE历史分位 {latest['pe_pct']}%"
+if latest.get('pb_pct') is not None:
+    _pct_disp += f" | PB历史分位 {latest['pb_pct']}%"
 if latest['score'] >= 80: status_text, status_class = '极度低估', 'fs-score-high'
 elif latest['score'] >= 70: status_text, status_class = '低估', 'fs-score-high'
 elif latest['score'] >= 40: status_text, status_class = '无交易价值', 'fs-score-mid'
@@ -572,7 +581,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   </table></div>
   <h3>最新估值状态</h3>
   <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}） | 纯估值分（仅估值因子）：<strong>{_est_score_disp}</strong></p>
-  <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元</p>
+  <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元{_pct_disp}</p>
   <p>状态：<strong>{status_text}</strong></p>
   {_caveat_html}
 </section>
