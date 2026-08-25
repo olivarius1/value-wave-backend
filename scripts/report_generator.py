@@ -313,6 +313,7 @@ weights_display_lines = WEIGHTS_DISPLAY.replace(' + ', '\n             + ')
 
 # ===== 确定评分状态 =====
 latest = results[-1]
+_est_score_disp = latest.get('est_score') if latest.get('est_score') is not None else '-'
 if latest['score'] >= 80: status_text, status_class = '极度低估', 'fs-score-high'
 elif latest['score'] >= 70: status_text, status_class = '低估', 'fs-score-high'
 elif latest['score'] >= 40: status_text, status_class = '无交易价值', 'fs-score-mid'
@@ -566,11 +567,11 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <h2 class="section-num">Section 04</h2>
   <h2>关键时点估值分析</h2>
   <div class="table-wrap"><table>
-    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>状态</th></tr></thead>
+    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>估值分</th><th>状态</th></tr></thead>
     <tbody id="keyDateTable"></tbody>
   </table></div>
   <h3>最新估值状态</h3>
-  <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}）</p>
+  <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}） | 纯估值分（仅估值因子）：<strong>{_est_score_disp}</strong></p>
   <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元</p>
   <p>状态：<strong>{status_text}</strong></p>
   {_caveat_html}
@@ -674,7 +675,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>纯估值分: <strong>' + (d.est_score == null ? '-' : d.est_score) + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
     legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
@@ -742,7 +743,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       if (keyDates.indexOf(data[i].date) !== -1 || added < 4) {{
         var r = data[i];
         var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 40 ? '无交易价值' : r.score >= 20 ? '高估' : '极度高估';
-        tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + st + '</td></tr>';
+        tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + (r.est_score == null ? '-' : r.est_score) + '</td><td>' + st + '</td></tr>';
         added++;
       }}
     }}
@@ -814,7 +815,7 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>纯估值分: <strong style="color:#fff">' + (d.est_score == null ? '-' : d.est_score) + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
       }}
     }},
     legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
