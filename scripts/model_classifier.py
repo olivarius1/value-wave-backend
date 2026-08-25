@@ -22,6 +22,8 @@ import urllib.parse
 import json
 import sys
 
+from financial_fetcher import _cache_financial  # 复用财务数据缓存（可复现性）
+
 
 # ===== 行业关键词先验（仅作为辅助证据，不单独决定结果）=====
 _KEYWORD_HINTS = {
@@ -116,6 +118,18 @@ def _fetch_json(url, timeout=15):
 
 def fetch_industry(stock_code, exchange):
     """
+    获取股票行业分类（东方财富 EM2016 三级行业，带本地缓存）
+
+    Returns:
+        str: 行业描述，如 '电子设备-半导体-集成电路'；失败返回 ''
+    """
+    return _cache_financial(
+        stock_code, 'industry',
+        lambda: _fetch_industry_uncached(stock_code, exchange))
+
+
+def _fetch_industry_uncached(stock_code, exchange):
+    """
     获取股票行业分类（东方财富 EM2016 三级行业）
 
     Returns:
@@ -139,6 +153,22 @@ def fetch_industry(stock_code, exchange):
 
 
 def fetch_rd_ratio(stock_code, exchange, max_years=5):
+    """
+    获取近几期研发费用率（带本地缓存）
+
+    研发费用字段 RDEXPEND 与营收 TOTALOPERATEREVE 均在主表 RPT_F10_FINANCE_MAINFINADATA，
+    仅取年报口径（REPORT_TYPE=年报）以保证可比性。
+
+    Returns:
+        list of dict: [{'year': 2024, 'rd': 5.2(亿), 'revenue': 100.0(亿), 'rd_ratio': 0.052}, ...]
+        从新到旧；获取失败返回 []
+    """
+    return _cache_financial(
+        stock_code, 'rd',
+        lambda: _fetch_rd_ratio_uncached(stock_code, exchange, max_years))
+
+
+def _fetch_rd_ratio_uncached(stock_code, exchange, max_years=5):
     """
     获取近几期研发费用率（研发费用 RDEXPEND / 营业总收入）
 

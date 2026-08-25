@@ -6,6 +6,7 @@
 """
 import os
 import sys
+import datetime
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
@@ -69,13 +70,28 @@ def _run_new_format():
     print(f"=== {stock_code} 估值报告生成 ===")
 
     # 1. 获取K线数据（带缓存+增量）
-    from kline_cache import get_kline
+    from kline_cache import get_kline, get_kline_raw
     kline_result = get_kline(stock_code, exchange, no_cache=args.no_cache)
     kline_data = kline_result['kline']
+    # 不复权真实价K线（历史 PE/PB 必须用当日真实交易价；前复权价会随最新除权整体缩放导致失真）
+    raw_kline = get_kline_raw(stock_code, exchange, no_cache=args.no_cache)
     qt_pe = kline_result['pe']
     qt_pb = kline_result['pb']
     qt_price = kline_result['price']
     stock_name = args.name or kline_result['name'] or stock_code
+
+    # ===== 盘中虚拟点检测（方案A：内存拼接，不写缓存）=====
+    # 判断条件：qt 返回了当天日期的实时价格，且 K 线最后一天 < 今天（盘中）
+    # 收盘后正式K线数据包含当日，条件不再满足，盘中点自动消失
+    has_intraday = False
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+    qt_date = str(kline_result.get('qt_date') or '')
+    if qt_date == today_str and qt_price > 0 and kline_data and kline_data[-1][0] < today_str:
+        intraday_vol = kline_result.get('volume', 0) or 0
+        # 盘中无开高低，均用实时价；成交量为盘中累计量
+        kline_data = kline_data + [[today_str, qt_price, qt_price, qt_price, qt_price, intraday_vol]]
+        has_intraday = True
+        print(f"  盘中模式: 检测到今日({today_str})实时价格 {qt_price:.2f}，追加盘中虚拟点")
 
     if not kline_data:
         print("错误: 无法获取K线数据，请检查网络连接")
@@ -112,7 +128,7 @@ def _run_new_format():
         print(f"  PE区间: {pe_min} ~ {pe_max} (手动指定)")
     else:
         print(f"  计算历史PE/PB百分位区间...")
-        val_range = compute_valuation_range(kline_data, pershare_data, qt_pe, qt_pb)
+        val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
         pe_min = val_range['pe_min']
         pe_max = val_range['pe_max']
         if not args.pb:
@@ -126,7 +142,7 @@ def _run_new_format():
         pass  # 已从 val_range 获取
     else:
         # 只指定了PE没指定PB，需要单独计算PB
-        val_range = compute_valuation_range(kline_data, pershare_data, qt_pe, qt_pb)
+        val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
         pb_min = val_range['pb_min']
         pb_max = val_range['pb_max']
 
@@ -182,9 +198,11 @@ def _run_new_format():
         'dps': args.dps,
         'kline_files': [],
         'kline_data': kline_data,
+        'raw_kline': raw_kline,
         'qt_pe': qt_pe,
         'qt_pb': qt_pb,
         'qt_price': qt_price,
+        'has_intraday': has_intraday,
         'pershare_data': pershare_data,
     }
 

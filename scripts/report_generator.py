@@ -169,7 +169,7 @@ seen_dates = set()
 latest_pe = 0
 latest_pb = 0
 latest_price = 0
-_has_intraday = False
+_has_intraday = bool(_cfg.get('has_intraday')) if _cfg is not None else False
 
 if _KLINE_DATA_FROM_CACHE:
     # 缓存模式：直接使用已获取的K线数据
@@ -248,6 +248,9 @@ if not _pershare_data:
         _pershare_data = []
 _eps_series = {d['year']: d['eps'] for d in _pershare_data} if _pershare_data else None
 _bps_series = {d['year']: d['bps'] for d in _pershare_data} if _pershare_data else None
+# 不复权真实交易价序列 {date: close}（评分用真实价算历史 PE/PB；缺失日期回退前复权 close）
+_raw_kline_data = _cfg.get('raw_kline') if _cfg is not None else None
+_raw_close_map = {r[0]: float(r[2]) for r in _raw_kline_data} if _raw_kline_data else None
 
 _score_params = {
     'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX,
@@ -255,6 +258,8 @@ _score_params = {
     'latest_price': latest_price, 'latest_pe': latest_pe, 'latest_pb': latest_pb,
     'total_shares': TOTAL_SHARES,
     'eps_series': _eps_series, 'bps_series': _bps_series,
+    # 不复权真实交易价：历史 PE/PB 用当日真实价计算（前复权价随除权整体缩放会失真）
+    'pe_close_series': _raw_close_map,
     'dps': _REPORT_CONFIG.get('dps'),
 }
 results = compute_daily_scores(kline, active_weights, factor_values, _score_params)
@@ -498,7 +503,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
 <header class="report-header">
   <div class="subtitle">A股估值系统设计</div>
   <h1>{STOCK_NAME}（{STOCK_CODE}）<br>{SUBTITLE}</h1>
-  <div class="meta">2026年7月 &middot; 基于历年年报/季报数据自动校准 &middot; 最近10年K线回测</div>
+  <div class="meta">2026年7月 &middot; 基于历年年报/季报数据自动校准 &middot; 最近10年K线 &middot; 历史曲线为当前参数视角（含未来信息，仅展示口径）</div>
 </header>
 <main class="container">
 <section id="s1">
@@ -543,7 +548,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <h2 class="section-num">Section 03</h2>
   <h2>估值评分回测曲线（{period_label}）</h2>
   <div class="chart-figure">
-    <figcaption>图1：{STOCK_NAME}估值评分回测曲线（{len(results)}个交易日）</figcaption>
+    <figcaption>图1：{STOCK_NAME}估值评分回测曲线（{len(results)}个交易日）&middot; 当前参数视角：历史分数含未来信息（全局区间/最新基本面），仅展示当前口径，不作历史验证</figcaption>
     <button class="fullscreen-btn" onclick="openFullscreenChart()">&#x26F6; 横屏查看</button>
     <span class="range-btns">
       <button class="range-btn" data-range="3m">3个月</button>

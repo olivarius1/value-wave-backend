@@ -468,6 +468,24 @@ def build_weights_display(active_weights):
 
 # ===== 核心：每日评分序列 =====
 
+def _series_effective(series, date_str):
+    """按披露滞后取年度序列值：T 年年报次年 5 月 1 日生效（A 股年报披露截止 4/30）
+
+    即 1-4 月可用最新年报为 T-2 年，5 月起为 T-1 年；目标年份缺失时只向前回退
+    （绝不取未来数据，消除披露时点未来函数）。
+    """
+    if not series:
+        return None
+    y = int(date_str[:4])
+    m = int(date_str[5:7])
+    eff = y - 1 if m >= 5 else y - 2
+    for yy in range(eff, eff - 4, -1):  # 只向前回退，绝不向后取未来
+        v = series.get(yy)
+        if v and v > 0:
+            return v
+    return None
+
+
 def compute_daily_scores(kline, active_weights, factor_values, params):
     """
     计算每日估值评分序列。
@@ -484,6 +502,10 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
             'eps_series': 可选 dict {year: eps}，提供则用真实历史EPS计算PE（治本），
                           否则回退到“恒定当前EPS”反推（兼容旧行为）,
             'bps_series': 可选 dict {year: bps}，同上用于PB,
+            'pe_close_series': 可选 dict {date: 不复权收盘价}，提供则 PE/PB 用当日真实价计算
+                          （修复前复权历史价缩放失真）；缺失日期回退 kline close,
+            'no_pe_fallback': 可选 bool，True 时无历史EPS/BPS的日期 PE/PB 计中性分0，
+                          禁用“当前EPS反推”（回测用，消除审计#5未来函数）,
         }
 
     Returns:
@@ -500,6 +522,8 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
     total_shares = params['total_shares']
     eps_series = params.get('eps_series')  # {year: eps} 或 None
     bps_series = params.get('bps_series')  # {year: bps} 或 None
+    pe_close_series = params.get('pe_close_series')  # {date: 不复权收盘价} 或 None
+    no_pe_fallback = params.get('no_pe_fallback', False)  # 回测禁用“当前EPS反推”
 
     n = len(kline)
     results = []
@@ -510,24 +534,28 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
         ma60 = sum(kline[j]['close'] for j in range(max(0, i - 59), i + 1)) / min(60, i + 1)
         vol_ma20 = sum(kline[j]['volume'] for j in range(max(0, i - 19), i + 1)) / min(20, i + 1)
 
-        # PE/PB：优先用真实历史EPS/BPS（若提供），否则回退到恒定当前EPS反推
-        year = int(row['date'][:4])
-        hist_eps = None
-        hist_bps = None
-        if eps_series:
-            hist_eps = eps_series.get(year) or eps_series.get(year - 1)
-        if bps_series:
-            hist_bps = bps_series.get(year) or bps_series.get(year - 1)
+        # PE/PB：优先用真实历史EPS/BPS（按披露时点生效），否则回退到恒定当前EPS反推
+        # （no_pe_fallback=True 时无历史数据计中性分，回测消除未来函数）
+        hist_eps = _series_effective(eps_series, row['date'])
+        hist_bps = _series_effective(bps_series, row['date'])
+        # 当日真实交易价（不复权），缺失时回退前复权收盘价
+        pe_price = close
+        if pe_close_series:
+            pe_price = pe_close_series.get(row['date']) or close
 
         if hist_eps and hist_eps > 0:
-            pe_ttm = close / hist_eps
+            pe_ttm = pe_price / hist_eps
+        elif no_pe_fallback:
+            pe_ttm = 0  # 缺历史EPS：PE因子计中性分，不引入未来信息
         else:
-            pe_ttm = close / latest_price * latest_pe if latest_price > 0 else 0
+            pe_ttm = pe_price / latest_price * latest_pe if latest_price > 0 else 0
 
         if hist_bps and hist_bps > 0:
-            pb = close / hist_bps
+            pb = pe_price / hist_bps
+        elif no_pe_fallback:
+            pb = 0
         else:
-            pb = close / latest_price * latest_pb if latest_price > 0 else 0
+            pb = pe_price / latest_price * latest_pb if latest_price > 0 else 0
 
         mcap = close * total_shares
 

@@ -9,6 +9,14 @@ import urllib.request
 import urllib.parse
 import sys
 import os
+import time as _time
+
+
+# ===== 财务数据本地缓存（回测可复现性基础：数据冻结，30天内复用）=====
+_FIN_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), '..',
+    'local_reports', '.cache', 'financial')
+_FIN_CACHE_MAX_AGE = 30 * 86400  # 30天
 
 
 def _fetch_api(url, timeout=15):
@@ -26,15 +34,49 @@ def _fetch_api(url, timeout=15):
         return None
 
 
+def _cache_financial(stock_code, kind, loader):
+    """通用财务缓存：缓存存在且30天内 → 直接读；否则调用loader()抓取并保存"""
+    os.makedirs(_FIN_CACHE_DIR, exist_ok=True)
+    path = os.path.join(_FIN_CACHE_DIR, f"{stock_code}_{kind}.json")
+    if os.path.exists(path) and (_time.time() - os.path.getmtime(path)) < _FIN_CACHE_MAX_AGE:
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    data = loader()
+    if data:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+    return data
+
+
 def fetch_financial_reports(stock_code, exchange, max_reports=40):
     """
-    获取股票历年财务报表核心指标 (东方财富数据中心API)
-    
+    获取股票历年财务报表核心指标（带本地缓存）
+
     Args:
         stock_code: 股票代码, e.g. '600887'
         exchange: 交易所, 'sh' or 'sz'
         max_reports: 最多获取的报告期数量
-    
+
+    Returns:
+        list of dict, 按报告期从新到旧排列
+    """
+    return _cache_financial(
+        stock_code, 'reports',
+        lambda: _fetch_financial_reports_uncached(stock_code, exchange, max_reports))
+
+
+def _fetch_financial_reports_uncached(stock_code, exchange, max_reports=40):
+    """
+    获取股票历年财务报表核心指标 (东方财富数据中心API)
+
+    Args:
+        stock_code: 股票代码, e.g. '600887'
+        exchange: 交易所, 'sh' or 'sz'
+        max_reports: 最多获取的报告期数量
+
     Returns:
         list of dict, 按报告期从新到旧排列
     """
@@ -288,8 +330,27 @@ def fetch_kline_batches(stock_code, exchange, batches, output_dir):
 
 def fetch_stock_info(stock_code, exchange):
     """
+    获取股票基本信息：总股本、行业、最新营收/净利润/毛利率（带本地缓存）
+
+    Returns:
+        dict: {
+            'total_shares': 总股本(亿股),
+            'industry': 行业描述,
+            'revenue': 最新年报营收(亿),
+            'net_profit': 最新年报净利润(亿),
+            'gross_margin': 毛利率(小数),
+            'eps_growth': 近5年净利润CAGR,
+        }
+    """
+    return _cache_financial(
+        stock_code, 'info',
+        lambda: _fetch_stock_info_uncached(stock_code, exchange))
+
+
+def _fetch_stock_info_uncached(stock_code, exchange):
+    """
     获取股票基本信息：总股本、行业、最新营收/净利润/毛利率
-    
+
     Returns:
         dict: {
             'total_shares': 总股本(亿股),
@@ -351,8 +412,20 @@ def fetch_stock_info(stock_code, exchange):
 
 def fetch_pershare_data(stock_code, exchange, max_years=10):
     """
+    获取历年每股收益(EPS)和每股净资产(BPS)（带本地缓存）
+
+    Returns:
+        list of dict: [{'year': 2024, 'eps': 1.82, 'bps': 5.31}, ...]  从新到旧
+    """
+    return _cache_financial(
+        stock_code, 'pershare',
+        lambda: _fetch_pershare_data_uncached(stock_code, exchange, max_years))
+
+
+def _fetch_pershare_data_uncached(stock_code, exchange, max_years=10):
+    """
     获取历年每股收益(EPS)和每股净资产(BPS)
-    
+
     Returns:
         list of dict: [{'year': 2024, 'eps': 1.82, 'bps': 5.31}, ...]  从新到旧
     """

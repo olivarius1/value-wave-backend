@@ -3,7 +3,7 @@
 估值汇总报告生成器
 - 扫描所有已缓存股票（watchlist + batch_growth 合并去重）
 - 计算每只股票当前分数在历史中的百分位
-- 筛选百分位 < 40%（低估区）或 > 85%（高估区）
+- 筛选百分位 > 85%（低估区，分数处于历史高位）或 < 40%（高估区，分数处于历史低位）
 - 输出单页HTML汇总表
 """
 import json
@@ -274,22 +274,26 @@ def generate_html(results, output_path):
     """生成汇总HTML"""
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
 
-    # 分两组
-    undervalued = sorted([r for r in results if r['percentile'] < 40], key=lambda x: x['percentile'])
-    overvalued = sorted([r for r in results if r['percentile'] > 85], key=lambda x: -x['percentile'])
+    # 分两组：百分位 = 当前分数在历史中的位置；分数高 = 低估（便宜）
+    # 百分位>85%（分数处于历史高位，相对历史更便宜）→ 低估区；百分位<40%（分数处于历史低位，相对历史更贵）→ 高估区
+    undervalued = sorted([r for r in results if r['percentile'] > 85], key=lambda x: -x['percentile'])
+    overvalued = sorted([r for r in results if r['percentile'] < 40], key=lambda x: x['percentile'])
 
     def make_rows(items):
         rows = ''
         for r in items:
             pctl = r['percentile']
-            if pctl < 20:
-                badge = '<span class="badge badge-green">极低</span>'
+            # 徽章直接表达估值状态（分数高=低估）：高分位=低估（好），低分位=高估（坏）
+            if pctl > 95:
+                badge = '<span class="badge badge-green">极度低估</span>'
+            elif pctl > 85:
+                badge = '<span class="badge badge-blue">低估</span>'
+            elif pctl < 20:
+                badge = '<span class="badge badge-red">极度高估</span>'
             elif pctl < 40:
-                badge = '<span class="badge badge-blue">偏低</span>'
-            elif pctl > 95:
-                badge = '<span class="badge badge-red">极高</span>'
+                badge = '<span class="badge badge-orange">高估</span>'
             else:
-                badge = '<span class="badge badge-orange">偏高</span>'
+                badge = '<span class="badge badge-gray">中性</span>'
             rows += f'''<tr>
   <td class="stock"><b>{r['name']}</b><span class="code">{r['code']}</span></td>
   <td class="pctl">{pctl:.0f}% {badge}</td>
@@ -331,6 +335,7 @@ tr:hover {{ background:#f8f9ff; }}
 .badge-green {{ background:#d3f9d8; color:#2b8a3e; }}
 .badge-blue {{ background:#d0ebff; color:#1971c2; }}
 .badge-orange {{ background:#fff3bf; color:#e67700; }}
+.badge-gray {{ background:#f1f3f5; color:#666; }}
 .badge-red {{ background:#ffe3e3; color:#c92a2a; }}
 .summary {{ background:#fff; border-radius:8px; padding:16px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,.08); display:flex; gap:32px; flex-wrap:wrap; }}
 .stat {{ text-align:center; }}
@@ -345,19 +350,19 @@ tr:hover {{ background:#f8f9ff; }}
 
 <div class="summary">
   <div class="stat"><div class="val">{len(results)}</div><div class="lbl">已计算股票</div></div>
-  <div class="stat"><div class="val" style="color:#2b8a3e">{len(undervalued)}</div><div class="lbl">百分位&lt;40% (低估区)</div></div>
-  <div class="stat"><div class="val" style="color:#e63946">{len(overvalued)}</div><div class="lbl">百分位&gt;85% (高估区)</div></div>
+  <div class="stat"><div class="val" style="color:#2b8a3e">{len(undervalued)}</div><div class="lbl">百分位&gt;85% (低估区)</div></div>
+  <div class="stat"><div class="val" style="color:#e63946">{len(overvalued)}</div><div class="lbl">百分位&lt;40% (高估区)</div></div>
   <div class="stat"><div class="val">{len(results)-len(undervalued)-len(overvalued)}</div><div class="lbl">中间区域</div></div>
 </div>
 
-<h2>低估区 — 百分位 &lt; 40%（当前分数低于历史60%以上时间）</h2>
+<h2>低估区 — 百分位 &gt; 85%（分数处于历史高位，当前相对历史低估/便宜）</h2>
 {'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th></tr>' + make_rows(undervalued) + '</table>' if undervalued else '<div class="empty">当前无低估股票</div>'}
 
-<h2 class="over">高估区 — 百分位 &gt; 85%（当前分数高于历史85%以上时间）</h2>
+<h2 class="over">高估区 — 百分位 &lt; 40%（分数处于历史低位，当前相对历史高估/贵）</h2>
 {'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th></tr>' + make_rows(overvalued) + '</table>' if overvalued else '<div class="empty">当前无高估股票</div>'}
 
 <div class="meta" style="margin-top:32px;border-top:1px solid #eee;padding-top:12px;">
-  百分位含义: 当前分数在N年历史得分序列中的排位。30%表示当前分数低于历史70%的交易日（相对低估）。<br>
+  百分位含义: 当前分数在N年历史得分序列中的排位（分数高=低估）。85%表示当前分数高于历史85%的交易日——分数偏高，相对历史更便宜（低估）；30%表示当前分数仅高于历史30%的交易日——分数偏低，相对历史更贵（高估）。<br>
   分数含义: 0-100分，越高越低估。80+极度低估 / 70-80低估 / 40-70中性 / 20-40高估 / 0-20极度高估。
 </div>
 </body>
@@ -371,7 +376,7 @@ tr:hover {{ background:#f8f9ff; }}
 def main():
     print(f"{'='*60}")
     print(f"  估值汇总筛选报告")
-    print(f"  筛选条件: 百分位 < 40% 或 > 85%")
+    print(f"  筛选条件: 百分位 > 85% (低估) 或 < 40% (高估)")
     print(f"{'='*60}")
 
     results = []
@@ -394,18 +399,18 @@ def main():
     output = os.path.join(_SKILL_DIR, 'local_reports', '估值汇总筛选.html')
     generate_html(results, output)
 
-    # 控制台摘要
-    undervalued = [r for r in results if r['percentile'] < 40]
-    overvalued = [r for r in results if r['percentile'] > 85]
+    # 控制台摘要（分数高=低估：高分位→低估区，低分位→高估区）
+    undervalued = [r for r in results if r['percentile'] > 85]
+    overvalued = [r for r in results if r['percentile'] < 40]
     print(f"\n{'='*60}")
     print(f"  已分析: {len(results)}只 | 低估区: {len(undervalued)}只 | 高估区: {len(overvalued)}只")
     if undervalued:
-        print(f"\n  ◆ 低估区 (百分位<40%):")
-        for r in sorted(undervalued, key=lambda x: x['percentile']):
+        print(f"\n  ◆ 低估区 (百分位>85%):")
+        for r in sorted(undervalued, key=lambda x: -x['percentile']):
             print(f"    {r['name']}({r['code']}) 分数{r['score']:.1f} 百分位{r['percentile']:.0f}%")
     if overvalued:
-        print(f"\n  ◆ 高估区 (百分位>85%):")
-        for r in sorted(overvalued, key=lambda x: -x['percentile']):
+        print(f"\n  ◆ 高估区 (百分位<40%):")
+        for r in sorted(overvalued, key=lambda x: x['percentile']):
             print(f"    {r['name']}({r['code']}) 分数{r['score']:.1f} 百分位{r['percentile']:.0f}%")
     print(f"\n  报告: {output}")
     print(f"{'='*60}")
