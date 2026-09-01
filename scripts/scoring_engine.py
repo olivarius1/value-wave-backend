@@ -19,6 +19,7 @@
 """
 
 from bisect import bisect_right
+from datetime import datetime as _dt, timedelta as _td
 
 # ===== 8种模型权重预设 =====
 MODEL_PRESETS = {
@@ -485,8 +486,20 @@ def _series_effective(series, date_str):
 
     即 1-4 月可用最新年报为 T-2 年，5 月起为 T-1 年；目标年份缺失时只向前回退
     （绝不取未来数据，消除披露时点未来函数）。
+
+    series 兼容两种键：
+    - {year: value} 年份键：按生效年回退查表（原始年报口径）
+    - {'YYYY-MM-DD': value} 日期键：build_adjusted_series 逐日重述序列
+      （送转/派息滚动重述），直接查表，缺失日期（停牌等）向前回退最近可用值
     """
     if not series:
+        return None
+    if isinstance(next(iter(series)), str) and '-' in next(iter(series)):
+        d0 = _dt.strptime(date_str, '%Y-%m-%d')
+        for k in range(31):
+            v = series.get((d0 - _td(days=k)).strftime('%Y-%m-%d'))
+            if v is not None and v > 0:
+                return v
         return None
     y = int(date_str[:4])
     m = int(date_str[5:7])

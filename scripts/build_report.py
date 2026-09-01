@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 估值报告生成入口
-新格式: python build_report.py 600887 --model staples
-旧格式: python build_report.py 600887 "伊利股份" sh 63.25 15 35 ... (16+位置参数)
+用法: python build_report.py 600887 --model staples [--pe MIN MAX] [--pb MIN MAX] [--digest-growth 0.6]
 """
 import os
 import sys
@@ -17,22 +16,6 @@ sys.path.insert(0, _SCRIPT_DIR)
 MANUAL_RANGES = {
     '601899': {'pe': (8.3, 18.0), 'pb': (2.35, 5.1)},   # 紫金矿业：净利5年增长20倍，全10年区间致PE/PB双0分硬截断
 }
-
-
-def _is_old_format():
-    """检测是否为旧格式（16+位置参数，第2个参数不含--）"""
-    if len(sys.argv) < 17:
-        return False
-    # 旧格式第2个参数是股票名称（不含--）
-    return not sys.argv[2].startswith('--')
-
-
-def _run_old_format():
-    """旧格式：直接exec report_generator.py（它自己解析sys.argv）"""
-    _real_script = os.path.join(_SCRIPT_DIR, 'report_generator.py')
-    sys.argv[0] = _real_script
-    _exec_globals = {'__builtins__': __builtins__, '__file__': _real_script, '__name__': '__main__'}
-    exec(compile(open(_real_script, encoding='utf-8').read(), _real_script, 'exec'), _exec_globals)
 
 
 def _run_new_format():
@@ -57,6 +40,8 @@ def _run_new_format():
     parser.add_argument('--no-cache', action='store_true', help='强制全量刷新K线')
     parser.add_argument('--subtitle', help='报告副标题')
     parser.add_argument('--dps', type=float, help='每股年分红DPS(元)，股息率因子动态化：历史每日股息率=dps/当日价 (A2方案)')
+    parser.add_argument('--digest-growth', type=float, default=0.60,
+                        help='估值消化曲线触发阈值：高估档且最新报告期净利同比>=该值时，生成增速兑现假设下的消化版分数曲线 (默认 0.60)')
 
     # 解析已知参数，剩余的用 --key:value 格式解析为可选因子
     args, remaining = parser.parse_known_args()
@@ -110,7 +95,7 @@ def _run_new_format():
     from financial_fetcher import (
         fetch_stock_info, fetch_pershare_data,
         compute_valuation_range, fetch_financial_reports,
-        compute_financial_metrics, auto_fill_factors
+        compute_financial_metrics, auto_fill_factors, fetch_industry
     )
 
     print(f"  获取股票基本信息...")
@@ -118,6 +103,11 @@ def _run_new_format():
 
     total_shares = stock_info.get('total_shares', 0)
     industry = stock_info.get('industry', '')
+    if not industry:
+        # info 缓存无行业字段时从 push2 接口补拉（东财三级行业，如 工业金属）
+        industry = fetch_industry(stock_code, exchange)
+        if industry:
+            print(f"  [auto] 行业 = {industry} (东财行业分类)")
     revenue = stock_info.get('revenue', 0)
     net_profit = stock_info.get('net_profit', 0)
     gross_margin = stock_info.get('gross_margin', 0)
@@ -128,6 +118,22 @@ def _run_new_format():
 
     # 3. 获取历年EPS/BPS序列（用于PE/PB区间计算 & 真实历史PE评分口径）
     pershare_data = fetch_pershare_data(stock_code, exchange)
+
+    # 3b. 分红送转事件 → EPS/BPS 逐日滚动重述序列（口径连续性修复），
+    #     并检测序列覆盖：生效年缺失时评分回退当前值反推（历史曲线失真），必须显式警告
+    from financial_fetcher import (
+        fetch_bonus_events, build_adjusted_series, detect_series_coverage
+    )
+    bonus_events = fetch_bonus_events(stock_code, exchange)
+    adj_series = build_adjusted_series(
+        pershare_data, bonus_events, [r[0] for r in kline_data])
+    for _w in detect_series_coverage(pershare_data, kline_data, bonus_events):
+        print(f"  [警告] {_w}")
+    if adj_series:
+        _n_split = sum(1 for e in bonus_events if e['ratio'] > 0)
+        _n_div = len(bonus_events) - _n_split
+        print(f"  [auto] EPS/BPS 逐日重述: {len(adj_series['eps'])}天"
+              f" | 送转{_n_split}次 派息{_n_div}次")
 
     # 计算PE/PB区间（命令行手动指定 > MANUAL_RANGES 校准区间 > 自动10th/90th百分位）
     manual_ranges = MANUAL_RANGES.get(stock_code, {})
@@ -211,7 +217,7 @@ def _run_new_format():
         'net_profit': net_profit or '0',
         'gross_margin': gross_margin_str,
         'market_cap': market_cap or '0',
-        'industry': industry or '未知行业',
+        'industry': industry or '',
         'subtitle': subtitle,
         'model': model_type,
         'optional_factors': optional_factors,
@@ -224,6 +230,8 @@ def _run_new_format():
         'qt_price': qt_price,
         'has_intraday': has_intraday,
         'pershare_data': pershare_data,
+        'adj_series': adj_series,
+        'digest_growth': args.digest_growth,
     }
 
     # 通过全局变量传递config，exec report_generator.py
@@ -234,7 +242,4 @@ def _run_new_format():
 
 
 if __name__ == '__main__':
-    if _is_old_format():
-        _run_old_format()
-    else:
-        _run_new_format()
+    _run_new_format()

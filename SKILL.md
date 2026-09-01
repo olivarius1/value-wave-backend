@@ -12,7 +12,11 @@ description: A股估值分析Skill，自动获取东方财富年报/季报数据
 - **8种行业估值模型**：必选消费、可选消费、科技制造、周期资源、央企基建、银行保险、地产、医药消费
 - **19种估值因子**：6种基础因子（PE、PB、PEG、MA偏离、量能、波动率）+ 13种可选因子（ROE、股息率、研发费用率、毛利率稳定性、品牌溢价度、NAV折价、去化率、杠杆率、营收增速、订单增速、商品价格偏离、产能利用率、不良率）
 - **财务报表自动获取**：从东方财富API自动拉取历年年报、半年报、季报，自动计算并填充ROE、毛利率稳定性、营收增速等因子
-- **10年K线自动获取**：未提供K线文件时自动从腾讯财经API拉取最近10年日K线数据（不足则用最长可用数据）
+- **EPS/BPS 逐日滚动重述**：拉取东财分红送配明细，按送转/派息事件对历史 EPS/BPS 逐日重述（叠加20年财报窗口），消除5月年报切换的口径悬崖；覆盖检测在生效年缺失或送转与盈利跳变矛盾时告警
+- **10年K线自动获取**：未提供K线文件时自动从腾讯财经API拉取最近10年日K线数据（不足则用最长可用数据）；历史 PE/PB 用当日不复权真实价计算
+- **行业自动识别**：东财 F10 公司概况 EM2016 行业分类自动填入报告；获取失败时输出中性表述（不出现未知行业）
+- **估值消化曲线**：高估档且最新报告期净利同比 ≥ 阈值（--digest-growth，默认 60%）时，按 EPS×(1+g) 等效压缩 PE/PEG 因子同口径重算全曲线，紫色虚线叠加展示、tooltip 与测算卡同步呈现
+- **章节导航栏**：sticky 顶部导航（业务全景/评分模型/回测曲线/关键时点/逻辑风险），平滑滚动 + 当前章节高亮
 - **可选因子权重归一化**：缺失可选因子时权重自动均分到已有因子
 - **兼容旧模型**：`growth` 别名映射到 `staples`
 - **自包含HTML输出**：内联ECharts库，无需外部依赖，单文件可直接在浏览器打开
@@ -32,8 +36,9 @@ stock-valuation-skill/
 │   ├── report_generator.py    # 核心报告生成器（完全独立，不依赖后端）
 │   ├── kline_cache.py         # K线缓存与增量更新模块
 │   ├── financial_fetcher.py   # 财务报表数据获取器（东方财富API）
-│   ├── fetch_kline.sh         # K线数据获取脚本
-│   └── batch_build.sh         # 批量构建脚本
+│   ├── scan_watchlist.py      # watchlist 快速扫描（终端打分表）
+│   ├── batch_rebuild.py       # 批量重建报告（watchlist.txt 驱动）
+│   ├── summary_report.py      # 估值汇总筛选报告
 ├── _shared/
 │   └── js/
 │       └── echarts.min.js     # ECharts 库（内联到报告中）
@@ -49,7 +54,7 @@ stock-valuation-skill/
 
 ## 使用方式
 
-### 1. 新格式（推荐，仅2个必填参数）
+### 单只报告生成
 
 ```bash
 python scripts/build_report.py <股票代码> --model <模型类型>
@@ -70,19 +75,23 @@ K线数据自动缓存，第二次运行同一股票只需几秒（增量更新�
 - `--name "名称"`：手动股票名称
 - `--subtitle "副标题"`：报告副标题
 - `--no-cache`：强制全量刷新K线
+- `--dps 1.2`：每股年分红（股息率因子历史逐日动态化）
+- `--digest-growth 0.60`：估值消化曲线触发阈值（默认 0.60）
 - `--roe:0.15 --rd_ratio:0.08`：可选因子（`--key:value`格式）
 
-### 2. 旧格式（兼容，16+位置参数）
+### 批量生成
 
 ```bash
-python scripts/build_report.py \
-  <股票代码> <股票名称> <交易所> \
-  <总股本(亿股)> \
-  <PE最低> <PE最高> <PB最低> <PB最高> <预期增速> \
-  <营收> <净利润> <毛利率> <当前市值(亿)> \
-  <行业描述> <报告副标题> <模型类型> \
-  [--可选因子:值 ...] [K线JSON文件...]
+python scripts/batch_rebuild.py                          # 全量重建 watchlist
+python scripts/batch_rebuild.py --stocks 601799,600887   # 指定代码子集
+python scripts/batch_rebuild.py --model tech,cyclical    # 按模型过滤
+python scripts/batch_rebuild.py --dry-run                # 只打印将执行的命令
+python scripts/batch_rebuild.py --summary                # 完成后刷新估值汇总筛选.html
+python scripts/batch_rebuild.py --retry                  # 只重跑上次失败项（.cache/batch_failed.txt）
 ```
+
+股票池唯一来源 watchlist.txt（CSV：名称,代码,模型,最后报告时间）；扫描/重建/汇总三个入口同源解析。
+`python scripts/scan_watchlist.py` 为终端快速扫描（不生成报告）；`python scripts/summary_report.py` 生成汇总筛选页。
 
 **8种模型类型**：`staples`(必选消费) / `discretionary`(可选消费) / `tech`(科技制造) / `cyclical`(周期资源) / `soe`(央企基建) / `bank`(银行保险) / `realestate`(地产) / `pharma`(医药消费)
 
@@ -112,8 +121,10 @@ python scripts/build_report.py \
   - 每次最多返回500天数据，脚本自动分批获取
   - 必须带 `User-Agent` 头
 - **东方财富数据中心API**：`https://datacenter.eastmoney.com/securities/api/data/v1/get`
-  - 获取历年年报、半年报、季报核心财务指标
-  - 自动计算ROE均值、毛利率稳定性、营收同比等
+  - RPT_F10_FINANCE_MAINFINADATA：历年年报/半年报/季报核心财务指标（20年窗口，重述与区间计算依据）
+  - RPT_SHAREBONUS_DET：分红送配明细（送转/派息事件，逐日重述依据）
+  - RPT_F10_BASIC_ORGINFO：F10 公司概况（EM2016 行业分类）
+  - push2 域名接口间歇性拒连，不作为数据源
 
 ## 模型选择校验（重要，2026-08 复盘新增）
 

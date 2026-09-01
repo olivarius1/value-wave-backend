@@ -1,199 +1,46 @@
 #!/usr/bin/env python3
 """
 watchlist 快速估值扫描
-- 读取 watchlist.txt 中的股票
+- 读取 watchlist.txt（CSV：名称,代码,模型,最后报告时间）中的股票
 - 获取最新K线（增量缓存）
 - 计算当前分数 + 历史PE/PB区间
 - 输出是否低估/值得建仓的判断
+
+因子评分与权重全部复用 scoring_engine（与报告/回测同源，无重复实现）
 """
 import json
 import os
 import sys
 import datetime
+import io
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _SKILL_DIR = os.path.dirname(_SCRIPT_DIR)
 sys.path.insert(0, _SCRIPT_DIR)
+# 注意：stdout 编码包装不能在模块顶层做——本模块会被 batch_rebuild import，
+# 二次包装会让旧 TextIOWrapper 被 GC 时关闭底层流
 
 from kline_cache import get_kline, CACHE_DIR
 from financial_fetcher import (
     fetch_pershare_data, compute_valuation_range,
     fetch_financial_reports, compute_financial_metrics, auto_fill_factors
 )
-
-# ===== watchlist 股票映射 (名称 → 代码, 模型) =====
-WATCHLIST_MAP = {
-    '中国海油': ('600938', 'cyclical'),
-    '紫金矿业': ('601899', 'cyclical'),
-    '川恒股份': ('002895', 'cyclical'),
-    '万华化学': ('600309', 'cyclical'),
-    '星宇股份': ('601799', 'discretionary'),
-    '云铝股份': ('000807', 'cyclical'),
-    '云天化':   ('600096', 'cyclical'),
-    '中国中车': ('601766', 'soe'),
-    '中国建筑': ('601668', 'soe'),
-    '招商银行': ('600036', 'bank'),
-    '中国平安': ('601318', 'bank'),
-    '香农芯创': ('300475', 'tech'),
-    '世运电路': ('603920', 'tech'),
-    '东山精密': ('002384', 'tech'),
-    '国投资本': ('600061', 'bank'),
-    '紫金银行': ('601860', 'bank'),
-    '文科股份': ('002775', 'soe'),
-    '恒力石化': ('600346', 'cyclical'),
-    '盐湖股份': ('000792', 'cyclical'),
-    '通源石油': ('300164', 'cyclical'),
-    '国元证券': ('000728', 'bank'),
-    '铜陵有色': ('000630', 'cyclical'),
-    '中国神华': ('601088', 'soe'),
-    '华能国际': ('600011', 'soe'),
-    '伊利股份': ('600887', 'staples'),
-    '中国石油': ('601857', 'cyclical'),
-    '陕西煤业': ('601225', 'cyclical'),
-    '华丽家族': ('600503', 'realestate'),
-    '长城证券': ('002939', 'bank'),
-    '亿纬锂能': ('300014', 'tech'),
-    '新柴股份': ('301032', 'cyclical'),
-    '潍柴动力': ('000338', 'cyclical'),
-    '阳光电源': ('300274', 'tech'),
-    '高能环境': ('603588', 'soe'),
-    '晨光股份': ('603899', 'staples'),
-    '德明利':   ('001309', 'tech'),
-    '中际旭创': ('300308', 'tech'),
-    '新易盛':   ('300502', 'tech'),
-    '胜宏科技': ('300476', 'tech'),
-    '神火股份': ('000933', 'cyclical'),
-    '中公高科': ('603860', 'tech'),
-    '宏达股份': ('600331', 'cyclical'),
-    '元琛科技': ('688659', 'tech'),
-    '宝丰能源': ('600989', 'cyclical'),
-}
-
-# ===== 8种模型权重 (与 report_generator.py 一致) =====
-MODEL_WEIGHTS = {
-    'staples':       {'pe': 0.28, 'pb': 0.12, 'peg': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.10, 'margin_stability': 0.10},
-    'discretionary': {'pe': 0.22, 'pb': 0.12, 'peg': 0.22, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'brand_premium': 0.11},
-    'tech':          {'pe': 0.20, 'pb': 0.12, 'peg': 0.25, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'rd_ratio': 0.10},
-    'cyclical':      {'pe': 0.25, 'pb': 0.12, 'commodity_dev': 0.20, 'ma': 0.15, 'vol': 0.10, 'vola': 0.10, 'capacity_util': 0.08},
-    'soe':           {'pe': 0.15, 'pb': 0.18, 'dividend_yield': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'order_growth': 0.15, 'roe': 0.04},
-    'bank':          {'pe': 0.00, 'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
-    'realestate':    {'pe': 0.00, 'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
-    'pharma':        {'pe': 0.20, 'pb': 0.10, 'peg': 0.25, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'revenue_growth': 0.17},
-}
-
-OPTIONAL_FACTOR_KEYS = [
-    'commodity_dev', 'capacity_util', 'roe', 'dividend_yield', 'npl_ratio',
-    'nav_discount', 'clearance_rate', 'leverage', 'rd_ratio',
-    'margin_stability', 'brand_premium', 'order_growth', 'revenue_growth',
-]
-
-
-# ===== 评分函数 =====
-def score_pe(pe, pe_min, pe_max):
-    if pe <= 0: return 50
-    p = max(0, min(1, (pe - pe_min) / (pe_max - pe_min)))
-    return (1 - p) * 100
-
-def score_pb(pb, pb_min, pb_max):
-    if pb <= 0: return 50
-    p = max(0, min(1, (pb - pb_min) / (pb_max - pb_min)))
-    return (1 - p) * 100
-
-def score_peg(pe, eps_growth):
-    if pe <= 0 or eps_growth <= 0: return 50
-    peg = pe / (eps_growth * 100)
-    if peg < 0.8: return 95
-    elif peg < 1.0: return 80
-    elif peg < 1.2: return 65
-    elif peg < 1.5: return 50
-    elif peg < 2.0: return 35
-    else: return 20
-
-def score_ma(close, ma20, ma60):
-    if ma20 <= 0: return 50
-    dev20 = (close - ma20) / ma20 * 100
-    dev60 = (close - ma60) / ma60 * 100 if ma60 > 0 else 0
-    s20 = max(0, min(100, 50 - dev20 * 3))
-    s60 = max(0, min(100, 50 - dev60 * 2.5))
-    return s20 * 0.6 + s60 * 0.4
-
-def score_volume(volume, vol_ma20):
-    if vol_ma20 <= 0: return 50
-    ratio = volume / vol_ma20
-    if ratio < 0.5: return 85
-    elif ratio < 0.8: return 70
-    elif ratio < 1.2: return 55
-    elif ratio < 1.5: return 40
-    elif ratio < 2.0: return 30
-    else: return 20
-
-def score_volatility(close, high, low):
-    if close <= 0: return 50
-    vol = (high - low) / close
-    if vol < 0.01: return 85
-    elif vol < 0.02: return 70
-    elif vol < 0.03: return 55
-    elif vol < 0.05: return 40
-    else: return 20
-
-def score_roe(roe):
-    if roe <= 0: return 20
-    if roe >= 0.25: return 95
-    elif roe >= 0.20: return 85
-    elif roe >= 0.15: return 70
-    elif roe >= 0.10: return 55
-    elif roe >= 0.05: return 35
-    else: return 20
-
-def score_dividend_yield(dy):
-    if dy <= 0: return 30
-    if dy >= 0.08: return 95
-    elif dy >= 0.06: return 85
-    elif dy >= 0.04: return 70
-    elif dy >= 0.03: return 55
-    elif dy >= 0.02: return 40
-    else: return 30
-
-def score_optional(key, val):
-    """可选因子统一评分"""
-    funcs = {
-        'roe': score_roe,
-        'dividend_yield': score_dividend_yield,
-    }
-    if key in funcs:
-        return funcs[key](val)
-    # 其余可选因子缺失时返回中性分
-    return 50
+from scoring_engine import (
+    MODEL_PRESETS, resolve_active_weights,
+    score_pe, score_pb, score_peg, score_ma_deviation,
+    score_volume, score_volatility,
+    OPTIONAL_SCORE_FUNCS,
+)
 
 
 def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_max,
                          eps_growth, model_type, optional_factors=None):
-    """计算最新一天的分数"""
+    """计算最新一天的分数（因子函数与权重解析复用 scoring_engine）"""
     if not kline_data or len(kline_data) < 20:
         return None
 
-    weights = dict(MODEL_WEIGHTS.get(model_type, MODEL_WEIGHTS['cyclical']))
-    opt_factors = optional_factors or {}
-
-    # 处理缺失可选因子权重重分配
-    active_weights = {}
-    missing_w = 0
-    for fk, w in weights.items():
-        if fk in OPTIONAL_FACTOR_KEYS:
-            if opt_factors.get(fk) is not None:
-                active_weights[fk] = w
-            else:
-                missing_w += w
-        else:
-            active_weights[fk] = w
-    if missing_w > 0 and active_weights:
-        tw = sum(active_weights.values())
-        if tw > 0:
-            for fk in active_weights:
-                active_weights[fk] += active_weights[fk] / tw * missing_w
-    total_w = sum(active_weights.values())
-    if total_w > 0:
-        active_weights = {k: v / total_w for k, v in active_weights.items()}
+    preset = MODEL_PRESETS.get(model_type, MODEL_PRESETS['cyclical'])
+    active_weights = resolve_active_weights(preset['weights'], optional_factors or {})
 
     # 取最后一天数据
     last = kline_data[-1]
@@ -208,7 +55,6 @@ def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_m
     ma60 = sum(float(kline_data[j][2]) for j in range(max(0, n-60), n)) / min(60, n)
     vol_ma20 = sum(float(kline_data[j][5]) for j in range(max(0, n-20), n)) / min(20, n)
 
-    # 当前PE/PB (用最新qt值)
     cur_pe = pe if pe > 0 else 0
     cur_pb = pb if pb > 0 else 0
 
@@ -224,13 +70,13 @@ def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_m
         elif fk == 'peg':
             s = score_peg(cur_pe, eps_growth)
         elif fk == 'ma':
-            s = score_ma(close, ma20, ma60)
+            s = score_ma_deviation(close, ma20, ma60)
         elif fk == 'vol':
             s = score_volume(volume, vol_ma20)
         elif fk == 'vola':
             s = score_volatility(close, high, low)
-        elif fk in OPTIONAL_FACTOR_KEYS and opt_factors.get(fk) is not None:
-            s = score_optional(fk, opt_factors[fk])
+        elif fk in OPTIONAL_SCORE_FUNCS and optional_factors and optional_factors.get(fk) is not None:
+            s = OPTIONAL_SCORE_FUNCS[fk](optional_factors[fk])
         else:
             s = 50
         total_score += s * w
@@ -239,10 +85,10 @@ def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_m
 
 
 def get_status(score):
-    """分数 → 状态标签"""
+    """分数 → 状态标签（与 README 评分体系一致）"""
     if score >= 80: return '极度低估'
     elif score >= 70: return '低估'
-    elif score >= 40: return '中性'
+    elif score >= 40: return '无交易价值'
     elif score >= 20: return '高估'
     else: return '极度高估'
 
@@ -320,7 +166,7 @@ def scan_stock(name, code, model):
 
 
 def load_watchlist(path):
-    """读取 watchlist：新格式 CSV（名称,代码,模型,最后报告时间）；兼容旧格式（仅名称，查内置映射）"""
+    """读取 watchlist：CSV 格式（名称,代码,模型,最后报告时间）"""
     rows = []
     with open(path, 'r', encoding='utf-8') as f:
         for line in f:
@@ -330,14 +176,11 @@ def load_watchlist(path):
             parts = [p.strip() for p in line.split(',')]
             if len(parts) >= 3 and parts[1].isdigit():
                 rows.append((parts[0], parts[1], parts[2]))
-            elif parts[0] in WATCHLIST_MAP:
-                code, model = WATCHLIST_MAP[parts[0]]
-                rows.append((parts[0], code, model))
     return rows
 
 
 def main():
-    # 读取watchlist（新格式：名称,代码,模型,最后报告时间）
+    # 读取watchlist
     watchlist_path = os.path.join(_SKILL_DIR, 'watchlist.txt')
     if not os.path.exists(watchlist_path):
         print("错误: watchlist.txt 不存在")
@@ -404,4 +247,7 @@ def main():
 
 
 if __name__ == '__main__':
+    if not sys.stdout.isatty():
+        # 管道/重定向场景统一 UTF-8（配合 PowerShell Console 编码）；控制台直出走 console API 不需要
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     main()

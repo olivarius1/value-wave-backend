@@ -95,8 +95,6 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 
 ## 使用示例
 
-### 新格式（推荐）
-
 ```bash
 # 最简：自动获取一切
 python scripts/build_report.py 600887 --model staples
@@ -111,26 +109,24 @@ python scripts/build_report.py 601899 --model cyclical --commodity_dev:-0.05 --c
 python scripts/build_report.py 600887 --model staples --no-cache
 ```
 
-### 旧格式（兼容，16+位置参数）
-
-```bash
-python scripts/build_report.py 600887 "伊利股份" sh 63.25 \
-  15 35 2.0 5.0 0.08 \
-  "1156.36" "115.65" "34%" "1571" \
-  "乳制品龙头" "乳制品龙头估值框架与10年回测" \
-  staples
-```
-
 ### 批量生成
 
 ```bash
-# 创建配置文件 stocks.csv
-cat > stocks.csv << 'EOF'
-600887,伊利股份,sh,63.25,15,35,2.0,5.0,0.08,1156.36,115.65,34%,1571,乳制品龙头,乳制品龙头估值框架,staples
-601899,紫金矿业,sh,265.91,10,35,1.5,6.0,0.12,3490.8,517.77,27.7%,7666,有色金属采选,有色金属龙头估值框架,cyclical
-EOF
+# 全量重建 watchlist（股票池唯一来源 watchlist.txt：名称,代码,模型,最后报告时间）
+python scripts/batch_rebuild.py
 
-bash scripts/batch_build.sh stocks.csv
+# 指定代码子集 / 按模型过滤
+python scripts/batch_rebuild.py --stocks 601799,600887
+python scripts/batch_rebuild.py --model tech,cyclical
+
+# 只打印将执行的命令（不实际生成）
+python scripts/batch_rebuild.py --dry-run
+
+# 完成后刷新估值汇总筛选.html
+python scripts/batch_rebuild.py --summary
+
+# 只重跑上次失败的股票（失败清单自动记录在 local_reports/.cache/batch_failed.txt）
+python scripts/batch_rebuild.py --retry
 ```
 
 ## 数据来源
@@ -235,9 +231,8 @@ stock-valuation-skill/
 │   ├── run_backtest.py      # 回测入口：IC/分层/策略模拟 + 输出
 │   ├── report_builder.py    # 回测 HTML 报告生成
 │   ├── scan_watchlist.py    # watchlist 扫描
+│   ├── batch_rebuild.py     # 批量重建（watchlist.txt 驱动，支持子集/过滤/dry-run/retry）
 │   ├── summary_report.py    # 估值汇总筛选报告
-│   ├── fetch_kline.sh       # 腾讯K线获取
-│   └── batch_build.sh       # 批量构建
 ├── local_reports/backtest/  # 回测输出（每 run 独立目录）
 ├── _shared/js/
 │   └── echarts.min.js       # ECharts（内联到HTML）

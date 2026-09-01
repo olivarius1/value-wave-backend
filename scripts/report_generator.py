@@ -16,79 +16,38 @@ from scoring_engine import (
 )
 
 # ===== 配置区 =====
-# 支持两种模式：
-# 1. 新格式：build_report.py 设置 _REPORT_CONFIG dict 后 exec 本文件
-# 2. 旧格式：直接从 sys.argv 解析 16+ 个位置参数
+# 由 build_report.py 设置 _REPORT_CONFIG dict 后 exec 本文件，不支持独立运行
 
 _cfg = globals().get('_REPORT_CONFIG')
-if _cfg is not None:
-    # 新模式：从 config dict 读取
-    STOCK_CODE = _cfg['code']
-    STOCK_NAME = _cfg['name']
-    EXCHANGE = _cfg['exchange']
-    TOTAL_SHARES = _cfg['total_shares']
-    PE_MIN = _cfg['pe_min']
-    PE_MAX = _cfg['pe_max']
-    PB_MIN = _cfg['pb_min']
-    PB_MAX = _cfg['pb_max']
-    EPS_GROWTH = _cfg['eps_growth']
-    REVENUE = str(_cfg['revenue'])
-    NET_PROFIT = str(_cfg['net_profit'])
-    GROSS_MARGIN = str(_cfg['gross_margin'])
-    MARKET_CAP = str(_cfg['market_cap'])
-    INDUSTRY = _cfg['industry']
-    SUBTITLE = _cfg['subtitle']
-    MODEL_TYPE = _cfg['model']
-    optional_factors = _cfg.get('optional_factors', {})
-    KLINE_FILES = _cfg.get('kline_files', [])
-    # 新模式可能直接提供K线数据（从缓存）
-    _KLINE_DATA_FROM_CACHE = _cfg.get('kline_data')  # [[date,o,c,h,l,v],...]
-    _QT_PE = _cfg.get('qt_pe', 0)
-    _QT_PB = _cfg.get('qt_pb', 0)
-    _QT_PRICE = _cfg.get('qt_price', 0)
-else:
-    # 旧模式：从 sys.argv 解析
-    STOCK_CODE = sys.argv[1]
-    STOCK_NAME = sys.argv[2]
-    EXCHANGE = sys.argv[3]
-    TOTAL_SHARES = float(sys.argv[4])
-    PE_MIN = float(sys.argv[5])
-    PE_MAX = float(sys.argv[6])
-    PB_MIN = float(sys.argv[7])
-    PB_MAX = float(sys.argv[8])
-    EPS_GROWTH = float(sys.argv[9])
-    REVENUE = sys.argv[10]
-    NET_PROFIT = sys.argv[11]
-    GROSS_MARGIN = sys.argv[12]
-    MARKET_CAP = sys.argv[13]
-    INDUSTRY = sys.argv[14]
-    SUBTITLE = sys.argv[15]
-    MODEL_TYPE = sys.argv[16]
-    # 解析剩余参数
-    optional_factors = {}
-    kline_args = []
-    i = 17
-    while i < len(sys.argv):
-        arg = sys.argv[i]
-        if arg.startswith('--'):
-            factor_arg = arg[2:]
-            if ':' in factor_arg:
-                fkey, fval = factor_arg.split(':', 1)
-                try:
-                    optional_factors[fkey] = float(fval)
-                except ValueError:
-                    pass
-        else:
-            kline_args.append(arg)
-        i += 1
-    KLINE_FILES = kline_args
-    _KLINE_DATA_FROM_CACHE = None
-    _QT_PE = 0
-    _QT_PB = 0
-    _QT_PRICE = 0
+if _cfg is None:
+    print('错误: report_generator.py 由 build_report.py 注入 _REPORT_CONFIG 后执行，不支持独立运行')
+    sys.exit(1)
 
-# 历年EPS/BPS序列（Phase 1b：用于真实历史PE/PB评分口径；新格式由build_report透传，旧格式后续自行获取）
-_pershare_data = _cfg.get('pershare_data', []) if _cfg is not None else []
+STOCK_CODE = _cfg['code']
+STOCK_NAME = _cfg['name']
+EXCHANGE = _cfg['exchange']
+TOTAL_SHARES = _cfg['total_shares']
+PE_MIN = _cfg['pe_min']
+PE_MAX = _cfg['pe_max']
+PB_MIN = _cfg['pb_min']
+PB_MAX = _cfg['pb_max']
+EPS_GROWTH = _cfg['eps_growth']
+REVENUE = str(_cfg['revenue'])
+NET_PROFIT = str(_cfg['net_profit'])
+GROSS_MARGIN = str(_cfg['gross_margin'])
+MARKET_CAP = str(_cfg['market_cap'])
+INDUSTRY = _cfg['industry']
+SUBTITLE = _cfg['subtitle']
+MODEL_TYPE = _cfg['model']
+optional_factors = _cfg.get('optional_factors', {})
+KLINE_FILES = _cfg.get('kline_files', [])
+_KLINE_DATA_FROM_CACHE = _cfg.get('kline_data')  # [[date,o,c,h,l,v],...]
+_QT_PE = _cfg.get('qt_pe', 0)
+_QT_PB = _cfg.get('qt_pb', 0)
+_QT_PRICE = _cfg.get('qt_price', 0)
+
+# 历年EPS/BPS序列（由build_report透传）
+_pershare_data = _cfg.get('pershare_data', [])
 
 # 兼容旧参数：growth -> staples
 if MODEL_TYPE == 'growth':
@@ -169,7 +128,7 @@ seen_dates = set()
 latest_pe = 0
 latest_pb = 0
 latest_price = 0
-_has_intraday = bool(_cfg.get('has_intraday')) if _cfg is not None else False
+_has_intraday = bool(_cfg.get('has_intraday'))
 
 if _KLINE_DATA_FROM_CACHE:
     # 缓存模式：直接使用已获取的K线数据
@@ -246,10 +205,13 @@ if not _pershare_data:
         _pershare_data = _fetch_pershare(STOCK_CODE, EXCHANGE)
     except Exception:
         _pershare_data = []
-_eps_series = {d['year']: d['eps'] for d in _pershare_data} if _pershare_data else None
-_bps_series = {d['year']: d['bps'] for d in _pershare_data} if _pershare_data else None
+# 优先用 build_report 传入的逐日重述序列（adj_series，送转/派息滚动重述 + 窗口覆盖生效年），
+# 缺失时回退到年份键原值序列（旧行为，送转股/窗口截断时会有口径悬崖）
+_adj_series = _cfg.get('adj_series') or {}
+_eps_series = _adj_series.get('eps') or ({d['year']: d['eps'] for d in _pershare_data} if _pershare_data else None)
+_bps_series = _adj_series.get('bps') or ({d['year']: d['bps'] for d in _pershare_data} if _pershare_data else None)
 # 不复权真实交易价序列 {date: close}（评分用真实价算历史 PE/PB；缺失日期回退前复权 close）
-_raw_kline_data = _cfg.get('raw_kline') if _cfg is not None else None
+_raw_kline_data = _cfg.get('raw_kline')
 _raw_close_map = {r[0]: float(r[2]) for r in _raw_kline_data} if _raw_kline_data else None
 
 _score_params = {
@@ -261,15 +223,35 @@ _score_params = {
     # 不复权真实交易价：历史 PE/PB 用当日真实价计算（前复权价随除权整体缩放会失真）
     'pe_close_series': _raw_close_map,
     # PE/PB评分映射模式：手动区间保留线性映射，否则历史百分位rank（触顶饱和修复）
-    'use_rank_pe': _cfg.get('use_rank_pe', False) if _cfg is not None else False,
-    'use_rank_pb': _cfg.get('use_rank_pb', False) if _cfg is not None else False,
-    'dps': _REPORT_CONFIG.get('dps'),
+    'use_rank_pe': _cfg.get('use_rank_pe', False),
+    'use_rank_pb': _cfg.get('use_rank_pb', False),
+    'dps': _cfg.get('dps'),
 }
 results = compute_daily_scores(kline, active_weights, factor_values, _score_params)
 
 scores = [r['score'] for r in results]
 print(f"  评分: 均值{sum(scores)/len(scores):.1f} 最低{min(scores):.1f} 最高{max(scores):.1f} 最新{scores[-1]:.1f}")
 print(f"  区间: {kline[0]['date']} ~ {kline[-1]['date']}")
+
+# ===== 估值消化版曲线（高估档 + 高增速触发）=====
+# 数学：盈利增速 g 兑现 → EPS×(1+g) → 价格不变时 PE÷(1+g)。
+# 实现：放大 eps_series（PE 分母变大），并同步缩小 latest_pe（无历史 EPS 日期的反推回退口径）；
+# 不动价格序列（pe_close_series 同时供 PB 使用，缩价格会连带压缩 PB，且回退段会被二次压缩）。
+# 阈值由 build_report --digest-growth 传入（默认 0.60）；同比>500% 视为扭亏低基数，不适用线性外推，不生成。
+_digest = None
+_digest_yoy = None
+_digest_growth = _cfg.get('digest_growth', 0.60)
+_cfg_latest_yoy = _cfg.get('latest_yoy')
+if results[-1]['score'] < 40 and _cfg_latest_yoy and _digest_growth <= _cfg_latest_yoy < 5:
+    _digest_yoy = _cfg_latest_yoy
+    _g = 1.0 + _digest_yoy
+    _dig_params = dict(_score_params)
+    if _eps_series:
+        _dig_params['eps_series'] = {k: v * _g for k, v in _eps_series.items()}
+    _dig_params['latest_pe'] = latest_pe / _g if latest_pe else 0
+    _digest_results = compute_daily_scores(kline, active_weights, factor_values, _dig_params)
+    _digest = [r['score'] for r in _digest_results]
+    print(f"  [auto] 估值消化版曲线已生成: 最新报告期增速 {_digest_yoy:.0%} >= 阈值 {_digest_growth:.0%}")
 
 # 生成数据JS
 # 生成 markPoint 数据（标记盘中虚拟点）
@@ -291,9 +273,12 @@ val_data = {
              'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX, 'eps_growth': EPS_GROWTH,
              'total_shares': TOTAL_SHARES, 'subtitle': SUBTITLE,
              'dps': _REPORT_CONFIG.get('dps'),
+             'industry': INDUSTRY,
              'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results
 }
+if _digest:
+    val_data['digest'] = {'growth': _digest_yoy, 'threshold': _digest_growth, 'scores': _digest}
 val_data_js = 'var VALUATION_DATA = ' + json.dumps(val_data, ensure_ascii=False, separators=(',', ':')) + ';'
 
 # 读取ECharts
@@ -335,8 +320,8 @@ else: status_text, status_class = '极度高估', 'fs-score-low'
 # 增速判据优先最新报告期同比（盈利动能，方案A 2026-08），数据缺失时回退历史CAGR（EPS_GROWTH）
 _caveat_html = ''
 _dy = factor_values.get('dividend_yield', 0) or 0
-_latest_yoy = _cfg.get('latest_yoy') if _cfg is not None else None
-_report_label = (_cfg.get('latest_report_label', '最新报告期') if _cfg is not None else '最新报告期')
+_latest_yoy = _cfg.get('latest_yoy')
+_report_label = _cfg.get('latest_report_label', '最新报告期')
 _yoy = _latest_yoy if _latest_yoy else EPS_GROWTH
 if latest['score'] < 40 and (_dy >= 0.03 or _yoy > 0.20):
     _notes = []
@@ -355,6 +340,42 @@ if latest['score'] < 40 and (_dy >= 0.03 or _yoy > 0.20):
         '。高估判断需结合盈利/回报的持续性看待：若价格中枢或盈利中枢上移成立，静态高估可能被消化；若不可持续，则回归均值风险真实存在。</div>'
     )
 
+# 估值消化测算卡：触发时展示消化版当前分数与状态
+_digest_note_html = ''
+if _digest:
+    _dig_latest = _digest[-1]
+    _cur_score = latest['score']
+    if _dig_latest >= 80: _dig_status, _dig_cls = '极度低估', 'fs-score-high'
+    elif _dig_latest >= 70: _dig_status, _dig_cls = '低估', 'fs-score-high'
+    elif _dig_latest >= 40: _dig_status, _dig_cls = '无交易价值', 'fs-score-mid'
+    elif _dig_latest >= 20: _dig_status, _dig_cls = '高估', 'fs-score-low'
+    else: _dig_status, _dig_cls = '极度高估', 'fs-score-low'
+    _digest_note_html = (
+        '<div style="margin-top:10px;padding:10px 14px;border:1px solid #9333ea;'
+        'border-left:4px solid #9333ea;background:#faf5ff;border-radius:6px;font-size:0.92rem;">'
+        f'<strong>&#128300; 估值消化测算：</strong>若最新报告期盈利增速 {_digest_yoy*100:.0f}% 兑现'
+        '（EPS&times;(1+g)，价格不变时 PE/PEG 因子等效压缩，PB 与技术面因子不变），全曲线同口径重算后'
+        f'当前分数 <strong class="{_dig_cls}">{_dig_latest}</strong>（{_dig_status}），'
+        f'对比当前口径 {_cur_score} 分；曲线见 Section 03 紫色虚线。该测算为静态假设，增速不可持续时结论无效。</div>'
+    )
+
+# 消化版曲线的 echarts 片段（作为 python 变量拼入下方 f-string，避免花括号转义）
+_digest_legend_js = ", '估值消化版'" if _digest else ''
+if _digest:
+    _digest_series_main_js = (
+        ",\n      { name: '估值消化版', type: 'line', data: VALUATION_DATA.digest.scores, yAxisIndex: 0, "
+        "lineStyle: { color: '#9333ea', width: 1.5, type: 'dashed' }, itemStyle: { color: '#9333ea' }, symbol: 'none', z: 4 }"
+    )
+    _digest_series_fs_js = (
+        ",\n      { name: '估值消化版', type: 'line', data: VALUATION_DATA.digest.scores, yAxisIndex: 0, "
+        "lineStyle: { color: '#c084fc', width: 1.2, type: 'dashed' }, itemStyle: { color: '#c084fc' }, symbol: 'none', z: 4 }"
+    )
+    _digest_chart_note = '紫色虚线为估值消化版分数（增速兑现假设，同口径重算）。'
+else:
+    _digest_series_main_js = ''
+    _digest_series_fs_js = ''
+    _digest_chart_note = ''
+
 # 关键日期
 key_dates = []
 import datetime
@@ -363,6 +384,7 @@ for i in range(8):
     d = base + datetime.timedelta(days=i * 90)
     key_dates.append(d.strftime('%Y-%m-%d'))
 key_dates_str = ', '.join(f"'{d}'" for d in key_dates)
+_gen_date = datetime.date.today().strftime('%Y年%m月')
 
 # 生成动态因子参数表格HTML行
 factor_table_rows = []
@@ -427,6 +449,14 @@ if _financial_metrics:
 
 # 计算有效因子数量
 num_active_factors = sum(1 for w in active_weights.values() if w > 0.001)
+
+# 行业句子：有真实行业时显示；否则中性表述（不出 未知行业）
+if INDUSTRY and INDUSTRY != '未知行业':
+    _intro_p = (f'<p>{STOCK_NAME}（{EXCHANGE.upper()}{STOCK_CODE}）是<mark class="key">{INDUSTRY}行业</mark>的重要参与者。'
+                f'公司依托深厚的行业积累和竞争优势，在细分领域建立了稳固的市场地位。</p>')
+else:
+    _intro_p = (f'<p>{STOCK_NAME}（{EXCHANGE.upper()}{STOCK_CODE}）深耕自身细分领域，'
+                f'依托业务积累与竞争优势持续经营。</p>')
 
 # ===== 生成HTML =====
 html = f'''<!DOCTYPE html>
@@ -507,20 +537,36 @@ footer ol {{ padding-left: 1.2rem; }}
 footer li {{ margin-bottom: 0.75rem; }}
 footer a {{ color: #6aa3d8; text-decoration: none; }}
 footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,0.15); font-size: 0.75rem; color: rgba(255,255,255,0.4); }}
-@media (max-width: 768px) {{ .report-header h1 {{ font-size: 1.8rem; }} .metric-grid {{ grid-template-columns: repeat(2, 1fr); }} }}
+.toc-nav {{ position: sticky; top: 0; z-index: 500; background: rgba(250,250,249,0.96); border-bottom: 1px solid #d4d0c8; backdrop-filter: blur(6px); }}
+.toc-nav .toc-inner {{ max-width: 960px; margin: 0 auto; padding: 0 1rem; display: flex; gap: 0.25rem; overflow-x: auto; }}
+.toc-nav a {{ padding: 0.65rem 0.9rem; font-size: 0.88rem; color: #6b6b6b; text-decoration: none; white-space: nowrap; border-bottom: 2px solid transparent; transition: color 0.15s; }}
+.toc-nav a:hover {{ color: #1a4b8c; }}
+.toc-nav a.active {{ color: #1a4b8c; font-weight: 700; border-bottom-color: #c75b2a; }}
+section {{ scroll-margin-top: 56px; }}
+html {{ scroll-behavior: smooth; }}
+@media (max-width: 768px) {{ .report-header h1 {{ font-size: 1.8rem; }} .metric-grid {{ grid-template-columns: repeat(2, 1fr); }} .toc-nav a {{ font-size: 0.8rem; padding: 0.55rem 0.7rem; }} }}
 </style>
 </head>
 <body>
 <header class="report-header">
   <div class="subtitle">A股估值系统设计</div>
   <h1>{STOCK_NAME}（{STOCK_CODE}）<br>{SUBTITLE}</h1>
-  <div class="meta">2026年7月 &middot; 基于历年年报/季报数据自动校准 &middot; 最近10年K线 &middot; 历史曲线为当前参数视角（含未来信息，仅展示口径）</div>
+  <div class="meta">{_gen_date} &middot; 基于历年年报/季报数据自动校准 &middot; 最近10年K线 &middot; 历史曲线为当前参数视角（含未来信息，仅展示口径）</div>
 </header>
+<nav class="toc-nav">
+  <div class="toc-inner">
+    <a href="#s1">01 业务全景</a>
+    <a href="#s2">02 评分模型</a>
+    <a href="#s3">03 回测曲线</a>
+    <a href="#s4">04 关键时点</a>
+    <a href="#s5">05 逻辑风险</a>
+  </div>
+</nav>
 <main class="container">
 <section id="s1">
   <h2 class="section-num">Section 01</h2>
   <h2>公司业务全景与行业定位</h2>
-  <p>{STOCK_NAME}（{EXCHANGE.upper()}{STOCK_CODE}）是<mark class="key">{INDUSTRY}行业</mark>的重要参与者。公司依托深厚的行业积累和竞争优势，在细分领域建立了稳固的市场地位。</p>
+  {_intro_p}
   <div class="metric-grid">
     <div class="metric-card"><div class="number">{REVENUE}</div><div class="label">2025年营收（亿元）</div></div>
     <div class="metric-card"><div class="number">{NET_PROFIT}</div><div class="label">2025年归母净利润（亿元）</div></div>
@@ -570,7 +616,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       <button class="range-btn" data-range="all">全部</button>
     </span>
     <div id="chart-backtest" style="width:100%;height:550px;"></div>
-    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线，深绿点线为80分极度低估分界线，深红点线为20分极度高估分界线（浅绿/浅红细线为历史80th/20th百分位）。分数越高代表越被低估。</p>
+    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线，深绿点线为80分极度低估分界线，深红点线为20分极度高估分界线（浅绿/浅红细线为历史80th/20th百分位）。{_digest_chart_note}分数越高代表越被低估。</p>
   </div>
 </section>
 <section id="s4">
@@ -585,6 +631,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
   <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元{_pct_disp}</p>
   <p>状态：<strong>{status_text}</strong></p>
   {_caveat_html}
+  {_digest_note_html}
 </section>
 <section id="s5">
   <h2 class="section-num">Section 05</h2>
@@ -685,10 +732,10 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
-    legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
+    legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
     grid: {{ left: 70, right: 85, top: 45, bottom: 65 }},
     xAxis: {{
       type: 'category', data: dates,
@@ -722,7 +769,7 @@ footer .disclaimer {{ margin-top: 2rem; padding-top: 1rem; border-top: 1px solid
         }}, z: 5
       }},
       {{ name: '收盘价(元)', type: 'line', data: closes, yAxisIndex: 1, lineStyle: {{ color: '#d4d0c8', width: 1 }}, itemStyle: {{ color: '#d4d0c8' }}, symbol: 'none', areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: 'rgba(180,180,180,0.25)' }}, {{ offset: 1, color: 'rgba(180,180,180,0.02)' }}] }} }}, z: 1 }},
-      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#b8860b88', width: 1.5 }}, itemStyle: {{ color: '#b8860b' }}, symbol: 'none', z: 2 }}
+      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#b8860b88', width: 1.5 }}, itemStyle: {{ color: '#b8860b' }}, symbol: 'none', z: 2 }}{_digest_series_main_js}
     ]
   }});
   window.addEventListener('resize', function() {{ chart.resize(); }});
@@ -825,10 +872,10 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿';
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
-    legend: {{ data: ['分数(0-100)', '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
+    legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
     grid: {{ left: 65, right: 80, top: 45, bottom: 55 }},
     xAxis: {{
       type: 'category', data: dates,
@@ -862,7 +909,7 @@ function openFullscreenChart() {{
         }}, z: 5
       }},
       {{ name: '收盘价(元)', type: 'line', data: closes, yAxisIndex: 1, lineStyle: {{ color: '#9ca3af', width: 1 }}, itemStyle: {{ color: '#9ca3af' }}, symbol: 'none', areaStyle: {{ color: {{ type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{{ offset: 0, color: 'rgba(156,163,175,0.15)' }}, {{ offset: 1, color: 'rgba(156,163,175,0.02)' }}] }} }}, z: 1 }},
-      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#fbbf24', width: 1.2 }}, itemStyle: {{ color: '#fbbf24' }}, symbol: 'none', z: 2 }}
+      {{ name: '收益率%(1/PE)', type: 'line', data: peTTMs, yAxisIndex: 2, lineStyle: {{ color: '#fbbf24', width: 1.2 }}, itemStyle: {{ color: '#fbbf24' }}, symbol: 'none', z: 2 }}{_digest_series_fs_js}
     ]
   }});
   var resizeTimer;
@@ -897,6 +944,20 @@ document.addEventListener('fullscreenchange', function() {{
     if (overlay && overlay.classList.contains('active')) closeFullscreenChart();
   }}
 }});
+// === 章节导航 scrollspy ===
+(function() {{
+  var links = Array.prototype.slice.call(document.querySelectorAll('.toc-nav a'));
+  if (!links.length) return;
+  var secs = links.map(function(a) {{ return document.getElementById(a.getAttribute('href').substring(1)); }});
+  function onScroll() {{
+    var pos = window.scrollY + 90;
+    var idx = 0;
+    for (var i = 0; i < secs.length; i++) {{ if (secs[i] && secs[i].offsetTop <= pos) idx = i; }}
+    links.forEach(function(a, i) {{ a.classList.toggle('active', i === idx); }});
+  }}
+  window.addEventListener('scroll', onScroll, {{ passive: true }});
+  onScroll();
+}})();
 </script>
 </body>
 </html>'''

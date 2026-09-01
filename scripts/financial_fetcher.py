@@ -5,6 +5,7 @@
 用于估值评分模型的参数自动校准
 """
 import json
+import re
 import urllib.request
 import urllib.parse
 import sys
@@ -408,21 +409,61 @@ def _fetch_stock_info_uncached(stock_code, exchange):
     return info
 
 
+def fetch_industry(stock_code, exchange):
+    """获取东财行业分类名（F10 公司概况 EM2016 字段末段，如 工业金属/黄金），带本地缓存
+
+    独立缓存键：info 缓存旧记录无 industry 字段，30 天过期前无法自愈
+    """
+    return _cache_financial(
+        stock_code, 'industry_v1',
+        lambda: _fetch_industry_uncached(stock_code, exchange))
+
+
+def _fetch_industry_uncached(stock_code, exchange):
+    secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
+    q = urllib.parse.quote(secucode)
+    url = (
+        f"https://datacenter.eastmoney.com/securities/api/data/v1/get"
+        f"?reportName=RPT_F10_BASIC_ORGINFO"
+        f"&columns=SECUCODE,EM2016,INDUSTRYCSRC1"
+        f"&filter=(SECUCODE=%22{q}%22)"
+        f"&pageSize=1"
+        f"&source=HSF10"
+        f"&client=PC"
+    )
+    data = _fetch_api(url)
+    if data and data.get('success') and data.get('result'):
+        items = data['result'].get('data', [])
+        if items:
+            # EM2016 为东财行业分类三段链（如 有色金属-贵金属-黄金），取末段做行业名
+            em = (items[0].get('EM2016') or '').strip()
+            if em:
+                return em.split('-')[-1].strip()
+            csrc = (items[0].get('INDUSTRYCSRC1') or '').strip()
+            if csrc:
+                return csrc.split('-')[-1].strip()
+    return ''
+
+
 # ===== 历史PE/PB百分位计算 =====
 
-def fetch_pershare_data(stock_code, exchange, max_years=10):
+def fetch_pershare_data(stock_code, exchange, max_years=20):
     """
     获取历年每股收益(EPS)和每股净资产(BPS)（带本地缓存）
+
+    默认拉取 20 年：评分生效规则为 T 年年报次年 5 月生效（首年还需向前回退一年），
+    10 年窗口会导致曲线前段生效年缺失、评分回退当前值反推（系统性失真）。
+    缓存键 pershare20 与旧 10 年缓存隔离，首次运行自动重拉。
 
     Returns:
         list of dict: [{'year': 2024, 'eps': 1.82, 'bps': 5.31}, ...]  从新到旧
     """
     return _cache_financial(
-        stock_code, 'pershare',
+        stock_code, 'pershare20',
         lambda: _fetch_pershare_data_uncached(stock_code, exchange, max_years))
 
 
-def _fetch_pershare_data_uncached(stock_code, exchange, max_years=10):
+def _fetch_pershare_data_uncached(stock_code, exchange, max_years=20):
     """
     获取历年每股收益(EPS)和每股净资产(BPS)
 
@@ -454,11 +495,193 @@ def _fetch_pershare_data_uncached(stock_code, exchange, max_years=10):
             year = int(report_date[:4])
             eps = float(item.get('EPSJB') or 0)
             bps = float(item.get('BPS') or 0)
-            if eps > 0 and bps > 0:
-                result.append({'year': year, 'eps': eps, 'bps': bps})
+            # 亏损年 EPS<0 不计（PE 无意义），但 BPS>0 必须保留（PB 因子可用），
+            # 整条丢弃会让生效年缺口触发反推回退（历史曲线失真）
+            if eps > 0 or bps > 0:
+                result.append({'year': year, 'eps': eps if eps > 0 else 0,
+                               'bps': bps if bps > 0 else 0})
         except (ValueError, TypeError):
             continue
     return result
+
+
+def fetch_bonus_events(stock_code, exchange):
+    """
+    获取历年分红送转实施记录（带本地缓存），来源：东财 RPT_SHAREBONUS_DET。
+
+    只保留已实施（除权除息日非空）的记录，按除权日升序。
+    换数据源防护：若新源未提供送转事件（返回空），build_adjusted_series 退化为
+    原值序列（送转股会出现口径悬崖），配合 detect_series_coverage 的跳变检测暴露。
+
+    Returns:
+        list of dict: [{'date': '2016-06-14', 'ratio': 0.3, 'div': 0.72}, ...]
+        ratio: 每1股送转比例=(送+转)/10；div: 每1股派息(税前)=每10股派息/10
+    """
+    return _cache_financial(
+        stock_code, 'bonus_v2',
+        lambda: _fetch_bonus_events_uncached(stock_code, exchange))
+
+
+def _fetch_bonus_events_uncached(stock_code, exchange):
+    secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
+    url = (
+        f"https://datacenter.eastmoney.com/securities/api/data/v1/get"
+        f"?reportName=RPT_SHAREBONUS_DET"
+        f"&columns=ALL"
+        f"&filter=(SECUCODE=%22{secucode}%22)"
+        f"&pageSize=100"
+        f"&sortColumns=EX_DIVIDEND_DATE"
+        f"&sortTypes=1"
+        f"&source=HSF10"
+        f"&client=PC"
+    )
+    data = _fetch_api(url)
+    if not data or not data.get('success') or not data.get('result'):
+        print(f"  [financial_fetcher] 无法获取 {stock_code} 分红送转记录", file=sys.stderr)
+        return []
+    items = data['result'].get('data', [])
+    events = []
+    for item in items:
+        ex_date = (item.get('EX_DIVIDEND_DATE') or '')[:10]
+        if not ex_date:
+            continue  # 预案/股东大会通过但未实施
+        try:
+            send = float(item.get('SEND_RATIO') or 0)
+            trans = float(item.get('TRANSFER_RATIO') or 0)
+            bonus_rmb = float(item.get('PRETAX_BONUS_RMB') or 0)
+        except (ValueError, TypeError):
+            continue
+        # 结构化字段多数记录返回 null，从方案描述兜底解析（如 10送3转2派1.00元(含税)）
+        plan = item.get('IMPL_PLAN_PROFILE') or ''
+        def _plan_val(pattern, text=plan):
+            m = re.search(pattern, text)
+            return float(m.group(1)) if m else 0.0
+        if not send:
+            send = _plan_val(r'10送\s*(\d+(?:\.\d+)?)')
+        if not trans:
+            trans = _plan_val(r'10转\s*(\d+(?:\.\d+)?)')
+        if not bonus_rmb:
+            bonus_rmb = _plan_val(r'10派\s*(\d+(?:\.\d+)?)')
+        events.append({
+            'date': ex_date,
+            'ratio': (send + trans) / 10.0,
+            'div': bonus_rmb / 10.0,
+        })
+    return events
+
+
+def build_adjusted_series(pershare_data, bonus_events, dates):
+    """
+    构建 EPS/BPS 逐日有效序列（滚动重述，Point-in-Time 干净）。
+
+    每股指标原值按该年报期末股本披露，仅重述期末之后发生的送转/派息：
+      eps_eff(T) = eps(Y) × year_factor(Y) / cum_factor(T)
+      bps_eff(T) = (bps(Y) - (cum_div(T) - cum_div(Y末))) × year_factor(Y) / cum_factor(T)
+    cum_factor(T)=Π(1+送转比例)（截至T已实施）；year_factor(Y)=截至Y年末；
+    派息不缩股本、只减每股净资产。除权日股价÷(1+r) 的同时 EPS 同步÷(1+r)，
+    PE/PB 在除权日自然连续；5月年报切换只剩盈利增长的真实幅度。
+    生效年规则与 scoring_engine._series_effective 一致（T年年报次年5月生效，
+    缺失向前回退，绝不取未来）。无送转股票（全部ratio=0）EPS 不变，
+    BPS 仅扣期间派息（原口径从未扣，修复后 PB 更贴近真实净资产）。
+
+    Args:
+        pershare_data: fetch_pershare_data 返回值
+        bonus_events: fetch_bonus_events 返回值（升序）
+        dates: K线日期列表（升序）
+    Returns:
+        dict {'eps': {date: value}, 'bps': {date: value}}；无历史EPS时返回 None
+    """
+    if not pershare_data or not dates:
+        return None
+    eps_map = {d['year']: d['eps'] for d in pershare_data}
+    bps_map = {d['year']: d['bps'] for d in pershare_data}
+    if not eps_map:
+        return None
+
+    events = sorted(bonus_events or [], key=lambda e: e['date'])
+
+    def _base_eff_year(ds):
+        y = int(ds[:4])
+        m = int(ds[5:7])
+        return y - 1 if m >= 5 else y - 2
+
+    out_eps, out_bps = {}, {}
+    cum_f, cum_d = 1.0, 0.0
+    ei = 0
+    year_cache = {}
+    for ds in dates:
+        while ei < len(events) and events[ei]['date'] <= ds:
+            cum_f *= (1.0 + events[ei]['ratio'])
+            cum_d += events[ei]['div']
+            ei += 1
+        y = _base_eff_year(ds)
+        resolved = None
+        for yy in range(y, y - 5, -1):
+            if eps_map.get(yy) and eps_map[yy] > 0:
+                resolved = yy
+                break
+        if resolved is None:
+            continue  # 无历史EPS：不留值（上层按反推/中性回退）
+        y = resolved
+        if y not in year_cache:
+            yf, yd = 1.0, 0.0
+            for e in events:
+                if e['date'] <= f"{y}-12-31":
+                    yf *= (1.0 + e['ratio'])
+                    yd += e['div']
+                else:
+                    break
+            year_cache[y] = (yf, yd)
+        yf, yd = year_cache[y]
+        if cum_f <= 0:
+            continue
+        out_eps[ds] = eps_map[y] * yf / cum_f
+        if bps_map.get(y) and bps_map[y] > 0:
+            out_bps[ds] = (bps_map[y] - (cum_d - yd)) * yf / cum_f
+    if not out_eps:
+        return None
+    return {'eps': out_eps, 'bps': out_bps}
+
+
+def detect_series_coverage(pershare_data, kline_data, bonus_events=None):
+    """
+    检测 EPS/BPS 序列对 K 线区间的覆盖与口径一致性（换数据源防护）。
+
+    1) 覆盖：K线首日生效年（5月前为前两年）若无年报 EPS，评分回退当前值反推，
+       历史曲线该段系统性失真，必须显式警告而非静默出错。
+    2) 口径：相邻年报 EPS 增速与净利润增速背离超阈值（股本变动特征），
+       若送转事件为空则提示数据源可能缺送转记录。
+
+    Returns:
+        list of str: 警告消息（空列表=正常）
+    """
+    warns = []
+    if not kline_data:
+        return warns
+    if not pershare_data:
+        return ['EPS/BPS 序列缺失，历史 PE/PB 将用当前值反推（系统性失真）']
+    years = {d['year'] for d in pershare_data}
+    first = kline_data[0][0]
+    y = int(first[:4])
+    m = int(first[5:7])
+    eff = y - 1 if m >= 5 else y - 2
+    if eff not in years:
+        warns.append(
+            f"EPS/BPS 序列最早 {min(years)} 年，K线首日({first})生效年 {eff} 缺失，"
+            f"曲线前段 PE/PB 将用当前值反推（失真），建议扩大数据窗口或缩短K线范围")
+    if bonus_events is not None and not any(e['ratio'] > 0 for e in bonus_events):
+        by_year = {d['year']: d['eps'] for d in pershare_data}
+        recent = sorted(years)[-5:]
+        for a, b in zip(recent, recent[1:]):
+            ea, eb = by_year.get(a), by_year.get(b)
+            if ea and eb and ea > 0 and eb > 0:
+                chg = eb / ea
+                if chg < 0.6 or chg > 1.6:
+                    warns.append(
+                        f"EPS {a}->{b} 年跳变 {chg:.2f}x 疑似送转，但无送转事件记录，"
+                        f"请核对分红送配数据源完整性")
+                    break
+    return warns
 
 
 def compute_valuation_range(kline_data, pershare_data, current_pe=0, current_pb=0):
