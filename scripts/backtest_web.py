@@ -107,7 +107,7 @@ def _home_page():
 <title>估值回测服务</title><style>{_PAGE_CSS}</style></head>
 <body><div class="wrap">
   <h1>估值评分回测服务</h1>
-  <div class="sub">artifacts/backtest/ 浏览与重新回测 · 提交后约 1-2 分钟完成全量 44 只</div>
+  <div class="sub">artifacts/backtest/ 浏览与重新回测 · 提交后约 1-2 分钟完成全量 watchlist</div>
   <div class="card">
     <h2>最新结果</h2>
     {latest_link}

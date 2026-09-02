@@ -156,7 +156,7 @@ python scripts/batch_rebuild.py --retry
 ```bash
 cd D:/myLab/trader/stock-valuation-skill
 
-# 全量 44 只 watchlist（首次运行自动抓取不复权K线+财务数据并缓存）
+# 全量 watchlist（首次运行自动抓取不复权K线+财务数据并缓存）
 python scripts/run_backtest.py
 
 # 指定股票 / 时间段（起止均支持，避开特定行情段）/ 强制刷新数据

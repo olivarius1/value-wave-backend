@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 估值汇总报告生成器（数据中间件模式）
-- 股票池唯一来源 watchlist.txt（44只）
+- 股票池唯一来源 watchlist.txt
 - 数据来源：各股报告 JSON（artifacts/json_data/*-valuation.json），与个股报告同一份数据，
   分数口径绝对一致（rank百分位映射、不复权PE、披露滞后等全部沿用，无重复算分）
 - 计算每只股票当前分数在历史中的百分位

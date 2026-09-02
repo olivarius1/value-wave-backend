@@ -9,7 +9,7 @@
 4. 策略模拟：>=70 持仓 / <40 空仓 / 40-70 保持前态（信号滞后1日），等权组合 vs 买入持有
 
 用法：
-    python run_backtest.py                       # 全量 44 只 watchlist
+    python run_backtest.py                       # 全量 watchlist
     python run_backtest.py --stocks 600887       # 指定股票（逗号分隔）
     python run_backtest.py --refresh-data        # 重新抓取数据（默认只用缓存）
     python run_backtest.py --start 2020-01-01    # 截断回测起点
