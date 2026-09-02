@@ -14,9 +14,9 @@
     python run_backtest.py --refresh-data        # 重新抓取数据（默认只用缓存）
     python run_backtest.py --start 2020-01-01    # 截断回测起点
 
-输出（local_reports/backtest/{run_id}/）：
+输出（artifacts/backtest/{run_id}/）：
     meta.json / daily_scores.csv / metrics.json / curves.json / backtest_report.html
-    local_reports/backtest/backtest_latest.html （固定入口，指向最新一次）
+    artifacts/backtest/backtest_latest.html （固定入口，指向最新一次）
 """
 import argparse
 import csv
@@ -36,7 +36,7 @@ from backtest_engine import compute_pit_scores, DISCLOSURE_MONTH
 
 _PROJECT_ROOT = os.path.dirname(_SCRIPT_DIR)
 WATCHLIST_PATH = os.path.join(_PROJECT_ROOT, 'watchlist.txt')
-OUTPUT_ROOT = os.path.join(_PROJECT_ROOT, 'local_reports', 'backtest')
+OUTPUT_ROOT = os.path.join(_PROJECT_ROOT, 'artifacts', 'backtest')
 
 # ===== 验证参数 =====
 FUTURE_HORIZONS = (60, 250)   # 未来收益窗口（交易日）

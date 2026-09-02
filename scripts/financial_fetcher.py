@@ -16,7 +16,7 @@ import time as _time
 # ===== 财务数据本地缓存（回测可复现性基础：数据冻结，30天内复用）=====
 _FIN_CACHE_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), '..',
-    'local_reports', '.cache', 'financial')
+    'artifacts', '.cache', 'financial')
 _FIN_CACHE_MAX_AGE = 30 * 86400  # 30天
 
 

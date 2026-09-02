@@ -142,6 +142,6 @@ python scripts/batch_rebuild.py --retry                  # 只重跑上次失败
 
 ## 输出
 
-- 报告输出到项目根目录的 `local_reports/` 文件夹
+- 报告输出到项目根目录的 `artifacts/reports/` 文件夹（JSON 数据中间件同目录树 `artifacts/json_data/`）
 - 文件名格式：`{股票名称}{股票代码}-valuation.html`
 - 单文件自包含（内联ECharts），可直接在浏览器打开

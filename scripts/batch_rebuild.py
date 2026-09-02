@@ -22,7 +22,7 @@ sys.path.insert(0, _SCRIPT_DIR)
 
 from scan_watchlist import load_watchlist
 
-_FAILED_LIST = os.path.join(_SKILL_DIR, 'local_reports', '.cache', 'batch_failed.txt')
+_FAILED_LIST = os.path.join(_SKILL_DIR, 'artifacts', '.cache', 'batch_failed.txt')
 
 
 # ===== 股票池解析复用 scan_watchlist.load_watchlist =====
@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--model', help='逗号分隔模型过滤，如 tech,cyclical')
     parser.add_argument('--dry-run', action='store_true', help='只打印将执行的命令，不实际生成')
     parser.add_argument('--retry', action='store_true',
-                        help='只重跑上次失败的股票（local_reports/.cache/batch_failed.txt）')
+                        help='只重跑上次失败的股票（artifacts/.cache/batch_failed.txt）')
     parser.add_argument('--summary', action='store_true', help='完成后刷新估值汇总筛选.html')
     args = parser.parse_args()
 

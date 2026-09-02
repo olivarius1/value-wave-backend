@@ -1,6 +1,6 @@
 # 估值回测报告阅读说明
 
-> 本说明对应 `local_reports/backtest/{run_id}/backtest_report.html`（每次运行会复制一份 `reading_guide.md` 到报告同目录）。
+> 本说明对应 `artifacts/backtest/{run_id}/backtest_report.html`（每次运行会复制一份 `reading_guide.md` 到报告同目录）。
 
 ## 一、这份报告回答什么问题
 

@@ -2,7 +2,7 @@
 """
 估值汇总报告生成器（数据中间件模式）
 - 股票池唯一来源 watchlist.txt（44只）
-- 数据来源：各股报告 JSON（local_reports/*-valuation.json），与个股报告同一份数据，
+- 数据来源：各股报告 JSON（artifacts/json_data/*-valuation.json），与个股报告同一份数据，
   分数口径绝对一致（rank百分位映射、不复权PE、披露滞后等全部沿用，无重复算分）
 - 计算每只股票当前分数在历史中的百分位
 - 筛选百分位 > 85%（低估区，分数处于历史高位）或 < 40%（高估区，分数处于历史低位）
@@ -44,7 +44,7 @@ MODEL_NAMES = {
 
 def analyze_stock(code, name, model):
     """从个股报告 JSON 读取结果，口径与个股报告绝对一致（同一份数据，无重复算分）"""
-    json_path = os.path.join(_SKILL_DIR, 'local_reports', f'{name}{code}-valuation.json')
+    json_path = os.path.join(_SKILL_DIR, 'artifacts', 'json_data', f'{name}{code}-valuation.json')
     if not os.path.exists(json_path):
         return None
     try:
@@ -206,7 +206,7 @@ def main():
             print(f" 失败: {e}")
 
     # 生成HTML
-    output = os.path.join(_SKILL_DIR, 'local_reports', '估值汇总筛选.html')
+    output = os.path.join(_SKILL_DIR, 'artifacts', 'reports', '估值汇总筛选.html')
     generate_html(results, output)
 
     # 控制台摘要（分数高=低估：高分位→低估区，低分位→高估区）

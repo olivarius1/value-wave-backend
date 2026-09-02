@@ -12,11 +12,11 @@ import time
 import urllib.request
 import datetime
 
-# 缓存目录：local_reports/.cache/
+# 缓存目录：artifacts/.cache/
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _SKILL_DIR = os.path.dirname(_SCRIPT_DIR)
 _PROJECT_ROOT = _SKILL_DIR  # 独立项目，根目录即skill目录
-CACHE_DIR = os.path.join(_PROJECT_ROOT, 'local_reports', '.cache')
+CACHE_DIR = os.path.join(_PROJECT_ROOT, 'artifacts', '.cache')
 
 
 def _cache_path(stock_code, suffix='_kline'):

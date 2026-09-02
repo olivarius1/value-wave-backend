@@ -77,13 +77,16 @@ except ImportError:
 except Exception as e:
     print(f"  [warn] 财务报表获取失败: {e}")
 
-# 输出文件（基于skill scripts目录，输出到 skill reports/ 或项目 local_reports/）
+# 输出目录：artifacts/ 下 html 报告、json 数据中间件、缓存分目录存放
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _SKILL_DIR = os.path.dirname(_SCRIPT_DIR)
 _PROJECT_ROOT = _SKILL_DIR  # 独立项目，根目录即skill目录
-_OUTPUT_DIR = os.path.join(_PROJECT_ROOT, 'local_reports')
-os.makedirs(_OUTPUT_DIR, exist_ok=True)
-OUTPUT = os.path.join(_OUTPUT_DIR, f'{STOCK_NAME}{STOCK_CODE}-valuation.html')
+_ARTIFACTS = os.path.join(_PROJECT_ROOT, 'artifacts')
+_HTML_DIR = os.path.join(_ARTIFACTS, 'reports')
+_JSON_DIR = os.path.join(_ARTIFACTS, 'json_data')
+os.makedirs(_HTML_DIR, exist_ok=True)
+os.makedirs(_JSON_DIR, exist_ok=True)
+OUTPUT = os.path.join(_HTML_DIR, f'{STOCK_NAME}{STOCK_CODE}-valuation.html')
 
 # 根据模型类型获取权重预设
 if MODEL_TYPE not in MODEL_PRESETS:
@@ -145,7 +148,9 @@ else:
             from financial_fetcher import fetch_kline_batches, generate_kline_batches
             print(f"  未提供K线文件，自动获取最近10年K线数据...")
             _batches = generate_kline_batches(STOCK_CODE, EXCHANGE, years=10)
-            _kline_files = fetch_kline_batches(STOCK_CODE, EXCHANGE, _batches, _OUTPUT_DIR)
+            _tmp_dir = os.path.join(_ARTIFACTS, '.cache')
+            os.makedirs(_tmp_dir, exist_ok=True)
+            _kline_files = fetch_kline_batches(STOCK_CODE, EXCHANGE, _batches, _tmp_dir)
             if _kline_files:
                 KLINE_FILES = _kline_files
                 print(f"  获取到 {len(KLINE_FILES)} 批K线数据")
@@ -314,6 +319,10 @@ elif latest['score'] >= 70: status_text, status_class = '低估', 'fs-score-high
 elif latest['score'] >= 40: status_text, status_class = '无交易价值', 'fs-score-mid'
 elif latest['score'] >= 20: status_text, status_class = '高估', 'fs-score-low'
 else: status_text, status_class = '极度高估', 'fs-score-low'
+
+# 分界线标准表：当前档位整行红色高亮
+_band_styles = {t: '' for t in ('极度低估', '低估', '无交易价值', '高估', '极度高估')}
+_band_styles[status_text] = ' style="color:#c0392b;font-weight:700;"'
 
 # ===== 高估但高回报/高成长 提示注释（4.3 校验扩展，2026-08）=====
 # 当评分处于高估档，但公司股息率高或盈利增速快时，提示估值中枢可能上移，避免机械采信高估结论
@@ -557,7 +566,7 @@ html {{ scroll-behavior: smooth; }}
   <div class="toc-inner">
     <a href="#s1">01 业务全景</a>
     <a href="#s2">02 评分模型</a>
-    <a href="#s3">03 回测曲线</a>
+    <a href="#s3">03 估值评分曲线</a>
     <a href="#s4">04 关键时点</a>
     <a href="#s5">05 逻辑风险</a>
   </div>
@@ -593,19 +602,19 @@ html {{ scroll-behavior: smooth; }}
   <div class="table-wrap"><table>
     <thead><tr><th>分数区间</th><th>估值状态</th><th>投资含义</th></tr></thead>
     <tbody>
-      <tr><td>80-100</td><td>极度低估</td><td>历史性低估区间，具备强烈安全边际</td></tr>
-      <tr><td>70-79</td><td>低估</td><td>估值偏低，可以考虑分批建仓</td></tr>
-      <tr><td>40-69</td><td>无交易价值</td><td>估值合理区间，无明确交易信号，持仓观望</td></tr>
-      <tr><td>20-39</td><td>高估</td><td>估值偏高，考虑减仓或观望</td></tr>
-      <tr><td>0-19</td><td>极度高估</td><td>严重高估，存在较大回调风险</td></tr>
+      <tr{_band_styles['极度低估']}><td>80-100</td><td>极度低估</td><td>历史性低估区间，具备强烈安全边际</td></tr>
+      <tr{_band_styles['低估']}><td>70-79</td><td>低估</td><td>估值偏低，可以考虑分批建仓</td></tr>
+      <tr{_band_styles['无交易价值']}><td>40-69</td><td>无交易价值</td><td>估值合理区间，无明确交易信号，持仓观望</td></tr>
+      <tr{_band_styles['高估']}><td>20-39</td><td>高估</td><td>估值偏高，考虑减仓或观望</td></tr>
+      <tr{_band_styles['极度高估']}><td>0-19</td><td>极度高估</td><td>严重高估，存在较大回调风险</td></tr>
     </tbody>
   </table></div>
 </section>
 <section id="s3">
   <h2 class="section-num">Section 03</h2>
-  <h2>估值评分回测曲线（{period_label}）</h2>
+  <h2>估值评分曲线（{period_label}）</h2>
   <div class="chart-figure">
-    <figcaption>图1：{STOCK_NAME}估值评分回测曲线（{len(results)}个交易日）&middot; 当前参数视角：历史分数含未来信息（全局区间/最新基本面），仅展示当前口径，不作历史验证</figcaption>
+    <figcaption>图1：{STOCK_NAME}估值评分曲线（{len(results)}个交易日）&middot; 当前参数视角：历史分数含未来信息（全局区间/最新基本面），仅展示当前口径，不作历史验证</figcaption>
     <button class="fullscreen-btn" onclick="openFullscreenChart()">&#x26F6; 横屏查看</button>
     <span class="range-btns">
       <button class="range-btn" data-range="3m">3个月</button>
@@ -629,7 +638,7 @@ html {{ scroll-behavior: smooth; }}
   <h3>最新估值状态</h3>
   <p>当前估值评分：<strong>{latest['score']}</strong> 分（{latest['date']}）</p>
   <p>收盘价 {latest['close']} 元 | PE(TTM) {latest['pe_ttm']} | PB {latest['pb']} | 总市值约 {latest['market_cap']:.0f} 亿元{_pct_disp}</p>
-  <p>状态：<strong>{status_text}</strong></p>
+  <p>状态：<strong style="color:#c0392b;">{status_text}</strong></p>
   {_caveat_html}
   {_digest_note_html}
 </section>
@@ -663,7 +672,7 @@ html {{ scroll-behavior: smooth; }}
 <!-- 全屏覆盖层 -->
 <div id="chartOverlay" class="chart-overlay">
   <div class="chart-overlay-header">
-    <span class="fs-title">估值评分回测曲线</span>
+    <span class="fs-title">估值评分曲线</span>
     <button class="close-btn" onclick="closeFullscreenChart()">✕ 关闭</button>
   </div>
   <div class="chart-overlay-info">
@@ -732,7 +741,7 @@ html {{ scroll-behavior: smooth; }}
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: <span style="color:#c0392b;font-weight:700">' + d.close + '</span> 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
     legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
@@ -872,7 +881,7 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: ' + d.close + ' 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: <span style="color:#f87171;font-weight:700">' + d.close + '</span> 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
     legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},
@@ -966,7 +975,7 @@ with open(OUTPUT, 'w', encoding='utf-8') as f:
     f.write(html)
 
 # 数据中间件：JSON 与 HTML 由同一数据源生成，口径绝对一致，供汇总报告/外部复用
-json_path = os.path.splitext(OUTPUT)[0] + '.json'
+json_path = os.path.join(_JSON_DIR, f'{STOCK_NAME}{STOCK_CODE}-valuation.json')
 with open(json_path, 'w', encoding='utf-8') as f:
     json.dump(val_data, f, ensure_ascii=False, separators=(',', ':'))
 

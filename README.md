@@ -18,7 +18,7 @@ cd D:/myLab/trader/stock-valuation-skill
 python scripts/build_report.py 600887 --model staples
 ```
 
-输出：`local_reports/伊利股份600887-valuation.html`（浏览器直接打开）
+输出：`artifacts/reports/伊利股份600887-valuation.html`（浏览器直接打开，JSON 中间件在 `artifacts/json_data/`）
 
 所有参数自动获取：股票名称、交易所、总股本、PE/PB区间（10th/90th百分位）、营收、净利润、毛利率、市值、行业、预期增速。
 
@@ -55,7 +55,7 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 
 ## K线缓存与增量更新
 
-- **首次运行**：全量获取10年K线（~30秒），缓存到 `local_reports/.cache/`
+- **首次运行**：全量获取10年K线（~30秒），缓存到 `artifacts/.cache/`
 - **同日重复运行**：直接使用缓存，0次API调用
 - **次日运行**：仅增量获取新数据（1次API调用，~2秒）
 - `--no-cache`：强制全量刷新
@@ -125,7 +125,7 @@ python scripts/batch_rebuild.py --dry-run
 # 完成后刷新估值汇总筛选.html
 python scripts/batch_rebuild.py --summary
 
-# 只重跑上次失败的股票（失败清单自动记录在 local_reports/.cache/batch_failed.txt）
+# 只重跑上次失败的股票（失败清单自动记录在 artifacts/.cache/batch_failed.txt）
 python scripts/batch_rebuild.py --retry
 ```
 
@@ -138,8 +138,10 @@ python scripts/batch_rebuild.py --retry
 
 ## 输出说明
 
-- 输出目录：项目根目录 `local_reports/`
-- 文件名：`{股票名称}{股票代码}-valuation.html`
+- 输出目录：`artifacts/`（可重建产物，与代码分离，不入库）
+  - `artifacts/reports/`：HTML 报告，文件名 `{股票名称}{股票代码}-valuation.html`
+  - `artifacts/json_data/`：同名 JSON 数据中间件（VALUATION_DATA 同源落盘，供汇总筛选与外部工具消费，HTML 不依赖它）
+  - `artifacts/.cache/`：K线/财务缓存、batch_failed.txt
 - 格式：单文件自包含HTML（内联ECharts），浏览器直接打开
 - 内容：10年估值回测曲线、当前评分、历史百分位、财务报表摘要
 
@@ -171,7 +173,7 @@ python scripts/backtest_web.py        # 打开 http://127.0.0.1:8643
 报告内每节附简短解读；完整版见 `docs/backtest_guide.md`（每次运行自动复制为 `{run_id}/reading_guide.md`），
 包含：分层回测 / 五等分桶 / IC（池化 vs 按股）/ 周频采样等术语表、各图表解读要点、常见误区与口径假设清单。
 
-### 输出（local_reports/backtest/）
+### 输出（artifacts/backtest/）
 
 - `backtest_latest.html`：固定入口，浏览器直接打开（最新一次回测的可视化报告）
 - `{run_id}/meta.json`：全部参数与口径（复现依据）
@@ -233,7 +235,11 @@ stock-valuation-skill/
 │   ├── scan_watchlist.py    # watchlist 扫描
 │   ├── batch_rebuild.py     # 批量重建（watchlist.txt 驱动，支持子集/过滤/dry-run/retry）
 │   ├── summary_report.py    # 估值汇总筛选报告
-├── local_reports/backtest/  # 回测输出（每 run 独立目录）
+├── artifacts/                  # 输出产物（不入库，可重建）
+│   ├── reports/                # HTML 估值报告（含估值汇总筛选.html）
+│   ├── json_data/              # 数据中间件 JSON（同源落盘，汇总/外部工具消费）
+│   ├── backtest/               # 回测输出（每 run 独立目录）
+│   └── .cache/                 # K线/财务缓存、batch_failed.txt
 ├── _shared/js/
 │   └── echarts.min.js       # ECharts（内联到HTML）
 └── templates/

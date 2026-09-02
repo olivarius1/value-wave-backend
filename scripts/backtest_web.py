@@ -107,7 +107,7 @@ def _home_page():
 <title>估值回测服务</title><style>{_PAGE_CSS}</style></head>
 <body><div class="wrap">
   <h1>估值评分回测服务</h1>
-  <div class="sub">local_reports/backtest/ 浏览与重新回测 · 提交后约 1-2 分钟完成全量 44 只</div>
+  <div class="sub">artifacts/backtest/ 浏览与重新回测 · 提交后约 1-2 分钟完成全量 44 只</div>
   <div class="card">
     <h2>最新结果</h2>
     {latest_link}
@@ -214,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(obj, ensure_ascii=False), ctype='application/json; charset=utf-8')
 
     def _serve_static(self, rel):
-        """/reports/<path> → local_reports/backtest/<path>，仅允许安全扩展名"""
+        """/reports/<path> → artifacts/backtest/<path>，仅允许安全扩展名"""
         path = os.path.normpath(os.path.join(OUTPUT_ROOT, rel))
         if not path.startswith(os.path.normpath(OUTPUT_ROOT)):
             self._send('forbidden', 403)
