@@ -6,6 +6,7 @@
 import os
 import sys
 import datetime
+import unicodedata
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
@@ -71,6 +72,8 @@ def _run_new_format():
     qt_pb = kline_result['pb']
     qt_price = kline_result['price']
     stock_name = args.name or kline_result['name'] or stock_code
+    # NFKC 规范化：接口返回的全角字母/数字（如 粤电力Ａ）转半角，保证报告文件名与 watchlist 名称一致
+    stock_name = unicodedata.normalize('NFKC', stock_name).strip()
 
     # ===== 盘中虚拟点检测（方案A：内存拼接，不写缓存）=====
     # 判断条件：qt 返回了当天日期的实时价格，且 K 线最后一天 < 今天（盘中）
