@@ -278,6 +278,7 @@ val_data = {
              'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX, 'eps_growth': EPS_GROWTH,
              'total_shares': TOTAL_SHARES, 'subtitle': SUBTITLE,
              'dps': _REPORT_CONFIG.get('dps'),
+             'param_source': _REPORT_CONFIG.get('param_source'),
              'industry': INDUSTRY,
              'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results

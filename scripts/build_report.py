@@ -6,6 +6,7 @@
 import os
 import sys
 import datetime
+import json
 import unicodedata
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,10 +14,28 @@ sys.path.insert(0, _SCRIPT_DIR)
 
 
 # 人工校准区间（盈利 regime 切换后全10年自动区间失真，见 templates/growth_params.md 8.4c）：
-# 命中时强制线性映射（use_rank=False），命令行 --pe/--pb 优先级更高
+# 命中时强制线性映射（use_rank=False），命令行 --pe/--pb 优先级更高；
+# 区间外的其他人工参数（DPS/增速/可选因子/副标题）由 meta.param_source 标记并在下次无参运行时自动恢复
 MANUAL_RANGES = {
+    '000933': {'pe': (4.8, 16.0)},                      # 神火股份：盈利跃迁，全10年区间失真（审计 2026-08-12 校准值；PB 走自动）
+    '600989': {'pe': (8.0, 20.0), 'pb': (1.5, 5.0)},    # 宝丰能源：早期低盈利期PE极高拉高上限（growth_params 8.4c 校准值）
     '601899': {'pe': (8.3, 18.0), 'pb': (2.35, 5.1)},   # 紫金矿业：净利5年增长20倍，全10年区间致PE/PB双0分硬截断
 }
+
+
+def _load_prev_meta(stock_name, stock_code):
+    """读取上次同名报告的 meta（artifacts/json_data/{name}{code}-valuation.json）
+
+    用于恢复人工干预过的参数（区间/DPS/增速/可选因子/副标题），防止批量重跑静默重置为自动值。
+    仅当 meta.param_source 标记为 manual/calibrated 的参数才恢复；旧报告无该字段视为 auto，不恢复。
+    """
+    path = os.path.normpath(os.path.join(
+        _SCRIPT_DIR, '..', 'artifacts', 'json_data', f'{stock_name}{stock_code}-valuation.json'))
+    try:
+        with open(path, encoding='utf-8') as f:
+            return json.load(f).get('meta') or {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _run_new_format():
@@ -56,6 +75,7 @@ def _run_new_format():
                 optional_factors[fkey] = float(fval)
             except ValueError:
                 pass
+    cli_opt_keys = set(optional_factors)  # 显式 CLI 因子键（auto_fill 自动补充的不算人工）
 
     stock_code = args.code
     exchange = 'sh' if stock_code.startswith('6') else 'sz'
@@ -74,6 +94,37 @@ def _run_new_format():
     stock_name = args.name or kline_result['name'] or stock_code
     # NFKC 规范化：接口返回的全角字母/数字（如 粤电力Ａ）转半角，保证报告文件名与 watchlist 名称一致
     stock_name = unicodedata.normalize('NFKC', stock_name).strip()
+
+    # ===== 上次人工参数自动恢复（防批量重跑静默重置，见 .qoder/commands/report-zx.md）=====
+    # 优先级：显式 CLI 参数 > 内置校准 MANUAL_RANGES > meta 恢复（仅上次人工项）> 自动计算
+    restored, restored_opt = [], set()
+    _prev_meta = _load_prev_meta(stock_name, stock_code)
+    _ps = _prev_meta.get('param_source') or {}
+    if args.pe is None and _ps.get('pe') in ('manual', 'calibrated'):
+        args.pe = (_prev_meta['pe_min'], _prev_meta['pe_max'])
+        restored.append(f"PE {args.pe[0]:g}~{args.pe[1]:g}")
+    if args.pb is None and _ps.get('pb') in ('manual', 'calibrated'):
+        args.pb = (_prev_meta['pb_min'], _prev_meta['pb_max'])
+        restored.append(f"PB {args.pb[0]:g}~{args.pb[1]:g}")
+    if args.growth is None and _ps.get('growth') == 'manual':
+        args.growth = _prev_meta['eps_growth']
+        restored.append(f"增速 {args.growth:.1%}")
+    if args.dps is None and _ps.get('dps') == 'manual':
+        args.dps = _prev_meta['dps']
+        restored.append(f"DPS {args.dps:g}")
+    if not args.subtitle and _ps.get('subtitle') == 'manual':
+        args.subtitle = _prev_meta['subtitle']
+        restored.append('副标题')
+    if _ps.get('opt_keys'):
+        _prev_opts = _prev_meta.get('optional_factors') or {}
+        for _k in _ps['opt_keys']:
+            if _k not in optional_factors and _k in _prev_opts:
+                optional_factors[_k] = _prev_opts[_k]
+                restored_opt.add(_k)
+        if restored_opt:
+            restored.append('因子 ' + ','.join(sorted(restored_opt)))
+    if restored:
+        print(f"  [恢复] 沿用上次人工参数: {'; '.join(restored)}（显式传参可覆盖）")
 
     # ===== 盘中虚拟点检测（方案A：内存拼接，不写缓存）=====
     # 判断条件：qt 返回了当天日期的实时价格，且 K 线最后一天 < 今天（盘中）
@@ -199,6 +250,16 @@ def _run_new_format():
 
     # 5. 构建配置并调用报告生成器
     subtitle = args.subtitle or f"{stock_name}估值框架与10年回测"
+
+    # 参数来源标记：写入 meta.param_source，下次无参运行时据此恢复人工项（manual=命令行指定）
+    param_source = {
+        'pe': 'manual' if args.pe else ('calibrated' if 'pe' in manual_ranges else 'auto'),
+        'pb': 'manual' if args.pb else ('calibrated' if 'pb' in manual_ranges else 'auto'),
+        'growth': 'manual' if args.growth is not None else 'auto',
+        'dps': 'manual' if args.dps else 'none',
+        'subtitle': 'manual' if args.subtitle else 'auto',
+        'opt_keys': sorted(set(cli_opt_keys) | restored_opt),
+    }
     gross_margin_str = f"{gross_margin:.1%}" if isinstance(gross_margin, float) and gross_margin > 0 else str(gross_margin)
 
     config = {
@@ -225,6 +286,7 @@ def _run_new_format():
         'model': model_type,
         'optional_factors': optional_factors,
         'dps': args.dps,
+        'param_source': param_source,
         'kline_files': [],
         'kline_data': kline_data,
         'raw_kline': raw_kline,

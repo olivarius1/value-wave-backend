@@ -25,6 +25,26 @@ from scan_watchlist import load_watchlist
 _FAILED_LIST = os.path.join(_SKILL_DIR, 'artifacts', '.cache', 'batch_failed.txt')
 
 
+def _sync_watchlist_dates(path, codes):
+    """批量成功后把 watchlist 最后报告时间列更新为今天（保持 CSV 四列语义）"""
+    import csv
+    import datetime
+    if not codes:
+        return
+    today = datetime.date.today().strftime('%Y-%m-%d')
+    with open(path, encoding='utf-8', newline='') as f:
+        rows_csv = list(csv.reader(f))
+    changed = 0
+    for r in rows_csv[1:]:
+        if len(r) >= 4 and r[1] in codes and r[3] != today:
+            r[3] = today
+            changed += 1
+    if changed:
+        with open(path, 'w', encoding='utf-8', newline='') as f:
+            csv.writer(f).writerows(rows_csv)
+        print(f'watchlist 最后报告时间列同步: {changed} 只 → {today}', flush=True)
+
+
 # ===== 股票池解析复用 scan_watchlist.load_watchlist =====
 
 
@@ -107,6 +127,10 @@ def main():
         print(f'失败清单已写入 {_FAILED_LIST}，可用 --retry 重跑', flush=True)
     elif os.path.exists(_FAILED_LIST):
         os.remove(_FAILED_LIST)
+
+    # 同步 watchlist 最后报告时间列（成功股票 → 今天）
+    ok_codes = {c for _, c, _ in rows} - {c for _, c in failed}
+    _sync_watchlist_dates(watchlist_path, ok_codes)
 
     if args.summary:
         print('\n刷新汇总报告...', flush=True)
