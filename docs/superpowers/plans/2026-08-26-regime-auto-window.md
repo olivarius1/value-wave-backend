@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **状态：已被取代（2026-09-03）**。实施采用 `.qoder/plans/regime-auto-window_3dccb72f.md`（v3 方案），验收记录见该文件第七节。与本方案的主要差异：检测输入用年报净利润序列而非 EPS 逐日重述序列；只向上切窗（向下回落仅标注不切窗）；仅 PE 走窗口、PB 维持全历史（本方案原设计 PE/PB 都切）；阈值 3.0（本方案 2.0）；MANUAL_RANGES 与 pe/pb 参数恢复机制均删除，--pe/--pb 变单次逃生阀。
+
 **Goal:** 全市场估值零人工锚点。用自动盈利换挡检测替代人工校准区间（MANUAL_RANGES），检测到换挡的股票只用换挡之后的 PE/PB 序列算分位，未换挡的用全历史（现状不变）。保留 rank 分位机制（避免满分问题），统一口径：所有股票分数都是"当前 PE/PB 在有效窗口内的百分位"，可横向比较。
 
 **Architecture:** 方案 A（自动检测 + 子序列 rank），否决方案 B（固定 N 年窗口：隐式 regime 处理粗糙，5 年前污染仍在窗口内）、方案 C（时间衰减加权分位：污染永不归零、排序抖动、参数不可验证）。在 `scoring_engine.py` 构建分位排序数组前插入换挡检测，命中则按换挡年份过滤序列；`build_report.py` 的 meta 增加窗口标注；MANUAL_RANGES 退役（紫金交给自动检测），`--pe/--pb` 命令行保留为逃生阀。
