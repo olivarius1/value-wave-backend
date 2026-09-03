@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scoring_engine import (
     MODEL_PRESETS, FACTOR_NAMES, OPTIONAL_FACTOR_KEYS, OPTIONAL_SCORE_FUNCS,
     resolve_active_weights, build_weights_display, compute_daily_scores,
+    detect_regime_window,
 )
 
 # ===== 配置区 =====
@@ -59,10 +60,12 @@ factor_values = dict(optional_factors)
 # ===== 财务报表数据获取 & 自动填充因子 =====
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _financial_metrics = {}
+_reports = _cfg.get('financial_reports') or []  # build_report 已拉取则直接复用，避免重复请求
 try:
     from financial_fetcher import fetch_financial_reports, compute_financial_metrics, auto_fill_factors
-    print(f"  获取{STOCK_NAME}财务报表数据...")
-    _reports = fetch_financial_reports(STOCK_CODE, EXCHANGE)
+    if not _reports:
+        print(f"  获取{STOCK_NAME}财务报表数据...")
+        _reports = fetch_financial_reports(STOCK_CODE, EXCHANGE)
     if _reports:
         _financial_metrics = compute_financial_metrics(_reports)
         print(f"  获取到 {_financial_metrics.get('annual_reports_count', 0)} 份年报")
@@ -219,6 +222,20 @@ _bps_series = _adj_series.get('bps') or ({d['year']: d['bps'] for d in _pershare
 _raw_kline_data = _cfg.get('raw_kline')
 _raw_close_map = {r[0]: float(r[2]) for r in _raw_kline_data} if _raw_kline_data else None
 
+# ===== 盈利换挡窗口（自动检测，替代旧的人工区间校准 MANUAL_RANGES）=====
+# 年报净利润序列 {归属年: 归母净利润亿元}：净利润总额不受送转稀释影响，直接用归属年。
+# 检测到向上换挡时 PE 分位只用换挡生效后的子序列（引擎内对齐年报披露时点）；
+# 向下回落/亏损段/历史不足只标注不切窗，PB 与其余因子维持全历史
+_annual_profit_series = {
+    int(_r['report_date'][:4]): _r['net_profit']
+    for _r in _reports if _r.get('report_type') == 'annual' and _r.get('report_date')
+}
+_regime_start, _regime_reason = detect_regime_window(_annual_profit_series)
+if _regime_reason == 'regime_switch':
+    print(f"  [auto] 检测到向上盈利换挡（换挡段起始 {_regime_start} 年），PE 分位窗口 {_regime_start + 1} 年 5 月起")
+elif _regime_reason in ('downward_skip', 'loss_period_skip'):
+    print(f"  [auto] 盈利换挡检测: {_regime_reason}，维持全历史分位口径")
+
 _score_params = {
     'pe_min': PE_MIN, 'pe_max': PE_MAX, 'pb_min': PB_MIN, 'pb_max': PB_MAX,
     'eps_growth': EPS_GROWTH,
@@ -231,8 +248,11 @@ _score_params = {
     'use_rank_pe': _cfg.get('use_rank_pe', False),
     'use_rank_pb': _cfg.get('use_rank_pb', False),
     'dps': _cfg.get('dps'),
+    # 盈利换挡窗口（手动 --pe 线性映射时不生效，仅作为 meta 标注依据）
+    'regime_window_start': _regime_start,
 }
-results = compute_daily_scores(kline, active_weights, factor_values, _score_params)
+_regime_info = {}
+results = compute_daily_scores(kline, active_weights, factor_values, _score_params, regime_info_out=_regime_info)
 
 scores = [r['score'] for r in results]
 print(f"  评分: 均值{sum(scores)/len(scores):.1f} 最低{min(scores):.1f} 最高{max(scores):.1f} 最新{scores[-1]:.1f}")
@@ -280,6 +300,8 @@ val_data = {
              'dps': _REPORT_CONFIG.get('dps'),
              'param_source': _REPORT_CONFIG.get('param_source'),
              'industry': INDUSTRY,
+             'window_start': _regime_start, 'window_reason': _regime_reason,
+             'regime_unstable': bool(_regime_info.get('unstable')),
              'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results
 }
@@ -367,6 +389,32 @@ if _digest:
         '（EPS&times;(1+g)，价格不变时 PE/PEG 因子等效压缩，PB 与技术面因子不变），全曲线同口径重算后'
         f'当前分数 <strong class="{_dig_cls}">{_dig_latest}</strong>（{_dig_status}），'
         f'对比当前口径 {_cur_score} 分；曲线见 Section 03 紫色虚线。该测算为静态假设，增速不可持续时结论无效。</div>'
+    )
+
+# 盈利换挡窗口标注（Section 02 参数表下方）：regime_switch/downward_skip/loss_period_skip
+# 分文案，其余 reason（no_switch/insufficient_history/no_data）不显示
+_regime_note_html = ''
+if _regime_reason == 'regime_switch':
+    _regime_note_html = (
+        '<div style="margin-top:10px;padding:10px 14px;border:1px solid #1a4b8c;'
+        'border-left:4px solid #1a4b8c;background:#eef4fb;border-radius:6px;font-size:0.92rem;">'
+        f'<strong>&#128200; 分位窗口：</strong>检测到向上盈利跃迁（年报净利润 5 年段中位数比值超阈值），'
+        f'PE 分位自 <strong>{_regime_start + 1} 年 5 月</strong>起仅用换挡生效后的子序列计算（对齐年报披露时点）；'
+        'PB 与其余因子保持全历史口径。</div>'
+    )
+elif _regime_reason == 'downward_skip':
+    _regime_note_html = (
+        '<div style="margin-top:10px;padding:10px 14px;border:1px solid #6b7280;'
+        'border-left:4px solid #6b7280;background:#f3f4f6;border-radius:6px;font-size:0.92rem;">'
+        '<strong>&#9664; 盈利回落：</strong>检测到盈利回落段，未切换分位窗口（全历史口径）。'
+        '周期股回落段 EPS 降速快于股价，切窗会使周期底部拿到最差评分，故维持全历史。</div>'
+    )
+elif _regime_reason == 'loss_period_skip':
+    _regime_note_html = (
+        '<div style="margin-top:10px;padding:10px 14px;border:1px solid #dc2626;'
+        'border-left:4px solid #dc2626;background:#fef2f2;border-radius:6px;font-size:0.92rem;">'
+        '<strong>&#9888;&#65039; 亏损段警示：</strong>历史含亏损段，PE 分位口径可靠性受限（亏损期 PE 无意义，'
+        '当前全历史分位可能包含失真样本）。本标注为已知口径局限，跨周期比较请结合 PB 与股息率因子。</div>'
     )
 
 # 消化版曲线的 echarts 片段（作为 python 变量拼入下方 f-string，避免花括号转义）
@@ -599,6 +647,7 @@ html {{ scroll-behavior: smooth; }}
 {factor_table_html}
     </tbody>
   </table></div>
+  {_regime_note_html}
   <h3>分数分界线标准</h3>
   <div class="table-wrap"><table>
     <thead><tr><th>分数区间</th><th>估值状态</th><th>投资含义</th></tr></thead>

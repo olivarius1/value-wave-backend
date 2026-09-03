@@ -13,14 +13,10 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _SCRIPT_DIR)
 
 
-# 人工校准区间（盈利 regime 切换后全10年自动区间失真，见 templates/growth_params.md 8.4c）：
-# 命中时强制线性映射（use_rank=False），命令行 --pe/--pb 优先级更高；
-# 区间外的其他人工参数（DPS/增速/可选因子/副标题）由 meta.param_source 标记并在下次无参运行时自动恢复
-MANUAL_RANGES = {
-    '000933': {'pe': (4.8, 16.0)},                      # 神火股份：盈利跃迁，全10年区间失真（审计 2026-08-12 校准值；PB 走自动）
-    '600989': {'pe': (8.0, 20.0), 'pb': (1.5, 5.0)},    # 宝丰能源：早期低盈利期PE极高拉高上限（growth_params 8.4c 校准值）
-    '601899': {'pe': (8.3, 18.0), 'pb': (2.35, 5.1)},   # 紫金矿业：净利5年增长20倍，全10年区间致PE/PB双0分硬截断
-}
+# 盈利换挡已由自动检测接管（scoring_engine.detect_regime_window）：检测到向上跃迁时
+# PE 分位只用换挡生效后的子序列，替代旧的人工校准区间 MANUAL_RANGES（已删除）。
+# --pe/--pb 命令行区间为单次逃生阀（线性映射，当次生效，不做持久化恢复）；
+# DPS/增速/可选因子/副标题等人工参数仍由 meta.param_source 标记并在下次无参运行时自动恢复。
 
 
 def _load_prev_meta(stock_name, stock_code):
@@ -96,16 +92,11 @@ def _run_new_format():
     stock_name = unicodedata.normalize('NFKC', stock_name).strip()
 
     # ===== 上次人工参数自动恢复（防批量重跑静默重置，见 .qoder/commands/report-zx.md）=====
-    # 优先级：显式 CLI 参数 > 内置校准 MANUAL_RANGES > meta 恢复（仅上次人工项）> 自动计算
+    # pe/pb 区间不恢复（manual 与 calibrated 都不恢复）：人工区间会覆盖盈利换挡自动窗口，
+    # 使新机制静默失效；--pe/--pb 为单次逃生阀（见文件头注释）。旧 meta 的 calibrated 标记自然失效。
     restored, restored_opt = [], set()
     _prev_meta = _load_prev_meta(stock_name, stock_code)
     _ps = _prev_meta.get('param_source') or {}
-    if args.pe is None and _ps.get('pe') in ('manual', 'calibrated'):
-        args.pe = (_prev_meta['pe_min'], _prev_meta['pe_max'])
-        restored.append(f"PE {args.pe[0]:g}~{args.pe[1]:g}")
-    if args.pb is None and _ps.get('pb') in ('manual', 'calibrated'):
-        args.pb = (_prev_meta['pb_min'], _prev_meta['pb_max'])
-        restored.append(f"PB {args.pb[0]:g}~{args.pb[1]:g}")
     if args.growth is None and _ps.get('growth') == 'manual':
         args.growth = _prev_meta['eps_growth']
         restored.append(f"增速 {args.growth:.1%}")
@@ -189,39 +180,21 @@ def _run_new_format():
         print(f"  [auto] EPS/BPS 逐日重述: {len(adj_series['eps'])}天"
               f" | 送转{_n_split}次 派息{_n_div}次")
 
-    # 计算PE/PB区间（命令行手动指定 > MANUAL_RANGES 校准区间 > 自动10th/90th百分位）
-    manual_ranges = MANUAL_RANGES.get(stock_code, {})
+    # 计算PE/PB区间：命令行手动指定（线性映射逃生阀）> 自动10th/90th百分位（rank映射）；
+    # 盈利换挡导致的区间失真由 detect_regime_window 窗口机制处理，不再需要人工校准区间
+    if args.pe is None or args.pb is None:
+        print(f"  计算历史PE/PB百分位区间...")
+        val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
     if args.pe:
         pe_min, pe_max = args.pe
         print(f"  PE区间: {pe_min} ~ {pe_max} (手动指定)")
-    elif 'pe' in manual_ranges:
-        pe_min, pe_max = manual_ranges['pe']
-        print(f"  PE区间: {pe_min} ~ {pe_max} (校准区间)")
-        if 'pb' not in manual_ranges and not args.pb:
-            val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
-            pb_min, pb_max = val_range['pb_min'], val_range['pb_max']
     else:
-        print(f"  计算历史PE/PB百分位区间...")
-        val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
-        pe_min = val_range['pe_min']
-        pe_max = val_range['pe_max']
-        if not args.pb and 'pb' not in manual_ranges:
-            pb_min = val_range['pb_min']
-            pb_max = val_range['pb_max']
-
+        pe_min, pe_max = val_range['pe_min'], val_range['pe_max']
     if args.pb:
         pb_min, pb_max = args.pb
         print(f"  PB区间: {pb_min} ~ {pb_max} (手动指定)")
-    elif 'pb' in manual_ranges:
-        pb_min, pb_max = manual_ranges['pb']
-        print(f"  PB区间: {pb_min} ~ {pb_max} (校准区间)")
-    elif not args.pe:
-        pass  # 已从 val_range 获取
     else:
-        # 只指定了PE没指定PB，需要单独计算PB
-        val_range = compute_valuation_range(raw_kline or kline_data, pershare_data, qt_pe, qt_pb)
-        pb_min = val_range['pb_min']
-        pb_max = val_range['pb_max']
+        pb_min, pb_max = val_range['pb_min'], val_range['pb_max']
 
     # 4. 自动填充可选因子
     model_type = args.model
@@ -251,10 +224,10 @@ def _run_new_format():
     # 5. 构建配置并调用报告生成器
     subtitle = args.subtitle or f"{stock_name}估值框架与10年回测"
 
-    # 参数来源标记：写入 meta.param_source，下次无参运行时据此恢复人工项（manual=命令行指定）
+    # 参数来源标记：写入 meta.param_source；pe/pb 仅溯源展示（manual=当次命令行指定），不再参与下次恢复
     param_source = {
-        'pe': 'manual' if args.pe else ('calibrated' if 'pe' in manual_ranges else 'auto'),
-        'pb': 'manual' if args.pb else ('calibrated' if 'pb' in manual_ranges else 'auto'),
+        'pe': 'manual' if args.pe else 'auto',
+        'pb': 'manual' if args.pb else 'auto',
         'growth': 'manual' if args.growth is not None else 'auto',
         'dps': 'manual' if args.dps else 'none',
         'subtitle': 'manual' if args.subtitle else 'auto',
@@ -271,9 +244,9 @@ def _run_new_format():
         'pe_max': pe_max,
         'pb_min': pb_min,
         'pb_max': pb_max,
-        # PE/PB评分映射模式：手动指定或校准区间时保留线性映射（人工锚点），否则用历史百分位rank（避免触顶饱和）
-        'use_rank_pe': args.pe is None and 'pe' not in manual_ranges,
-        'use_rank_pb': args.pb is None and 'pb' not in manual_ranges,
+        # PE/PB评分映射模式：手动指定时线性映射（逃生阀），否则历史百分位rank（盈利换挡窗口见 report_generator）
+        'use_rank_pe': args.pe is None,
+        'use_rank_pb': args.pb is None,
         'eps_growth': eps_growth,
         'latest_yoy': latest_yoy,
         'latest_report_label': latest_report_label,
@@ -296,6 +269,7 @@ def _run_new_format():
         'has_intraday': has_intraday,
         'pershare_data': pershare_data,
         'adj_series': adj_series,
+        'financial_reports': reports,  # 年报序列透传（盈利换挡检测用，避免 report_generator 重复拉取）
         'digest_growth': args.digest_growth,
     }
 

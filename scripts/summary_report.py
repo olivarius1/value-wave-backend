@@ -78,6 +78,8 @@ def analyze_stock(code, name, model):
         'score_avg': round(sum(scores)/len(scores), 1),
         'pe_range': f"{meta.get('pe_min')}~{meta.get('pe_max')}",
         'pb_range': f"{meta.get('pb_min')}~{meta.get('pb_max')}",
+        # 盈利换挡窗口：非空表示 PE 分位只用该年份 5 月起的子序列（透明呈现景气高位分位偏低的成因）
+        'window': f"{meta.get('window_start') + 1}年5月起" if meta.get('window_start') else '-',
         'days': len(scores),
         'last_date': latest.get('date', ''),
     }
@@ -119,6 +121,7 @@ def generate_html(results, output_path):
   <td class="num">{r['score_min']:.1f}~{r['score_max']:.1f}</td>
   <td class="num">{r['pe_range']}</td>
   <td class="num">{r['pb_range']}</td>
+  <td class="num">{r['window']}</td>
 </tr>\n'''
         return rows
 
@@ -169,10 +172,10 @@ tr:hover {{ background:#f8f9ff; }}
 </div>
 
 <h2>低估区 — 百分位 &gt; 85%（分数处于历史高位，当前相对历史低估/便宜）</h2>
-{'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th></tr>' + make_rows(undervalued) + '</table>' if undervalued else '<div class="empty">当前无低估股票</div>'}
+{'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th><th>PE分位窗口</th></tr>' + make_rows(undervalued) + '</table>' if undervalued else '<div class="empty">当前无低估股票</div>'}
 
 <h2 class="over">高估区 — 百分位 &lt; 40%（分数处于历史低位，当前相对历史高估/贵）</h2>
-{'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th></tr>' + make_rows(overvalued) + '</table>' if overvalued else '<div class="empty">当前无高估股票</div>'}
+{'<table><tr><th>股票</th><th>百分位</th><th>分数</th><th>PE</th><th>PB</th><th>价格</th><th>模型</th><th>历史均值</th><th>历史范围</th><th>PE区间</th><th>PB区间</th><th>PE分位窗口</th></tr>' + make_rows(overvalued) + '</table>' if overvalued else '<div class="empty">当前无高估股票</div>'}
 
 <div class="meta" style="margin-top:32px;border-top:1px solid #eee;padding-top:12px;">
   百分位含义: 当前分数在N年历史得分序列中的排位（分数高=低估）。85%表示当前分数高于历史85%的交易日——分数偏高，相对历史更便宜（低估）；30%表示当前分数仅高于历史30%的交易日——分数偏低，相对历史更贵（高估）。<br>
