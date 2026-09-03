@@ -20,6 +20,7 @@
 
 from bisect import bisect_right
 from datetime import datetime as _dt, timedelta as _td
+from statistics import median as _median
 
 # ===== 8种模型权重预设 =====
 MODEL_PRESETS = {
@@ -511,7 +512,67 @@ def _series_effective(series, date_str):
     return None
 
 
-def compute_daily_scores(kline, active_weights, factor_values, params):
+# ===== 盈利换挡检测（regime window，方案见 .qoder/plans/regime-auto-window_3dccb72f.md）=====
+REGIME_SEGMENT_YEARS = 5   # 按序列首年对齐每5年一段取中位数（抗单年极端值）
+REGIME_RATIO = 3.0         # 相邻段中位数比值阈值：>3 记向上换挡（≈年化25%，与正常成长拉开距离）
+REGIME_MIN_DAYS = 50       # 换挡窗口内PE样本下限，不足时pe因子计中性分
+# 披露生效月份与 backtest_engine.DISCLOSURE_MONTH 同源（A股年报披露截止4/30，T年年报次年5月生效）。
+# 此处定义本地常量而不反向 import backtest_engine：它会 import scoring_engine，反向导入成环
+REGIME_DISCLOSURE_MONTH = 5
+
+
+def detect_regime_window(profit_series):
+    """年报净利润序列的向上盈利换挡检测（供 report_generator 与后续全市场扫描复用）
+
+    必须传年报净利润序列 {归属年: 净利润}：fetch_financial_reports 结果过滤
+    report_type=='annual'，键取 report_date 前4位。净利润总额不受送转稀释影响，
+    且直接用归属年，避开逐日重述序列的日期键与生效年偏移问题。
+
+    规则：按序列首年对齐每 REGIME_SEGMENT_YEARS 年一段取段中位数；尾部不满一段的残段
+    不参与判定（保守方向：宁可窗口多含旧数据，也不错切）；相邻段中位数比值
+    > REGIME_RATIO 记向上换挡点（后段起始年，取最后一次）；< 1/REGIME_RATIO 记向下回落，
+    只标注不切窗（周期股回落段切窗会使周期底部拿到最差评分）；任一段中位数 <= 0
+    视为含亏损段，比值比较失真，跳过判定。
+
+    Returns:
+        (window_start, reason): window_start 为换挡段起始年（int）或 None；
+        reason ∈ {regime_switch, no_switch, downward_skip, loss_period_skip,
+                   insufficient_history, no_data}
+    """
+    if not profit_series:
+        return None, 'no_data'
+    years = sorted(profit_series)
+    first, last = years[0], years[-1]
+    n_full = (last - first + 1) // REGIME_SEGMENT_YEARS  # 完整段数（尾部残段不计）
+    if n_full < 2:
+        return None, 'insufficient_history'
+    # 各完整段中位数；段内缺年用现有样本，整段无样本记 None（跳过涉及它的相邻比较）
+    seg_medians = []
+    for i in range(n_full):
+        s = first + i * REGIME_SEGMENT_YEARS
+        vals = [profit_series[y] for y in range(s, s + REGIME_SEGMENT_YEARS) if y in profit_series]
+        seg_medians.append((s, _median(vals) if vals else None))
+    if any(m is not None and m <= 0 for _, m in seg_medians):
+        return None, 'loss_period_skip'
+    switch_years, downward = [], False
+    for i in range(1, len(seg_medians)):
+        _, m_prev = seg_medians[i - 1]
+        s_cur, m_cur = seg_medians[i]
+        if not m_prev or not m_cur:
+            continue
+        ratio = m_cur / m_prev
+        if ratio < 1.0 / REGIME_RATIO:
+            downward = True
+        elif ratio > REGIME_RATIO:
+            switch_years.append(s_cur)
+    if downward:
+        return None, 'downward_skip'
+    if switch_years:
+        return switch_years[-1], 'regime_switch'
+    return None, 'no_switch'
+
+
+def compute_daily_scores(kline, active_weights, factor_values, params, regime_info_out=None):
     """
     计算每日估值评分序列。
 
@@ -534,7 +595,13 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
             'use_rank_pb': 可选 bool，同上用于PB,
             'no_pe_fallback': 可选 bool，True 时无历史EPS/BPS的日期 PE/PB 计中性分0，
                           禁用“当前EPS反推”（回测用，消除审计#5未来函数）,
+            'regime_window_start': 可选 int，盈利换挡生效年份（detect_regime_window 返回）。提供且
+                          use_rank_pe 时，PE 分位只用 {start+1}-05-01 之后的子序列（对齐年报披露
+                          生效时点）；窗口样本 < REGIME_MIN_DAYS 时 pe 因子计中性50分。PB 不受影响。
+                          不传时行为与无窗口版本逐点一致（回测不传，保持PIT纯净）,
         }
+        regime_info_out: 可选 dict，传入则填充 {'window_start', 'unstable', 'window_days'}
+                （unstable=窗口样本不足致pe中性）。默认 None 不填充，现有调用方零影响。
 
     Returns:
         list of dict {date, close, pe_ttm, pb, market_cap, ma20, ma60, score, is_intraday, s_<factor>}
@@ -554,6 +621,7 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
     no_pe_fallback = params.get('no_pe_fallback', False)  # 回测禁用“当前EPS反推”
     use_rank_pe = params.get('use_rank_pe', False)  # PE因子：历史百分位rank映射
     use_rank_pb = params.get('use_rank_pb', False)  # PB因子：历史百分位rank映射
+    regime_window_start = params.get('regime_window_start')  # 盈利换挡窗口起始年或 None
 
     def _calc_pe_pb(date_str, close):
         """当日真实PE/PB：披露滞后EPS/BPS + 不复权真实价（rank预收集与主循环共用同一口径）"""
@@ -579,11 +647,18 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
     # rank 百分位预收集：全历史序列排序，主循环对每个日期二分求百分位
     # （与主循环同口径计算，避免区间口径不一致；解决固定区间截断导致的触顶饱和）
     _pe_rank_sorted = _pb_rank_sorted = None
+    # PE 分位换挡窗口：仅 PE 排序数组走窗口（盈利换挡改变 PE 的分母，净资产是存量，
+    # PB 锚仍可用）；切窗对齐年报披露时点（window_start 年年报次年 5 月生效，
+    # 与 _series_effective 同口径，避免窗口头部几个月 PE 分母还是旧年报盈利的口径断裂）
+    _pe_window_from = None
+    if regime_window_start is not None:
+        _pe_window_from = f'{regime_window_start + 1}-{REGIME_DISCLOSURE_MONTH:02d}-01'
+    _pe_hist = []
     if use_rank_pe or use_rank_pb:
-        _pe_hist, _pb_hist = [], []
+        _pb_hist = []
         for _r in kline:
             _pe, _pb = _calc_pe_pb(_r['date'], _r['close'])
-            if use_rank_pe and _pe > 0:
+            if use_rank_pe and _pe > 0 and (_pe_window_from is None or _r['date'] >= _pe_window_from):
                 _pe_hist.append(_pe)
             if use_rank_pb and _pb > 0:
                 _pb_hist.append(_pb)
@@ -591,6 +666,15 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
             _pe_rank_sorted = sorted(_pe_hist)
         if use_rank_pb and _pb_hist:
             _pb_rank_sorted = sorted(_pb_hist)
+    # 窗口内 PE 样本不足：rank 不可用，pe 因子计中性分、pe_pct 置 None（PB 不受影响，
+    # 刚换挡的股票不至于丢掉所有估值锚）；不传窗口时保持旧行为（回归保证）
+    _pe_window_insufficient = use_rank_pe and _pe_window_from is not None and len(_pe_hist) < REGIME_MIN_DAYS
+    if _pe_window_insufficient:
+        _pe_rank_sorted = None
+    if regime_info_out is not None:
+        regime_info_out['window_start'] = regime_window_start
+        regime_info_out['unstable'] = bool(_pe_window_insufficient)
+        regime_info_out['window_days'] = len(_pe_hist) if use_rank_pe else 0
 
     n = len(kline)
     results = []
@@ -625,7 +709,9 @@ def compute_daily_scores(kline, active_weights, factor_values, params):
                 factor_scores[fk] = 0
                 continue
             if fk == 'pe':
-                if use_rank_pe and _pe_rank_sorted and pe_ttm > 0:
+                if use_rank_pe and _pe_window_insufficient:
+                    s = 50  # 换挡窗口内PE样本不足：中性分，不让刚换挡的股票丢掉PB以外的估值锚
+                elif use_rank_pe and _pe_rank_sorted and pe_ttm > 0:
                     s = score_pe_rank(bisect_right(_pe_rank_sorted, pe_ttm) / len(_pe_rank_sorted))
                 else:
                     s = score_pe(pe_ttm, pe_min, pe_max)
