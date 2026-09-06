@@ -1,13 +1,13 @@
 # A股估值报告生成工具
 
-纯算法驱动的A股估值分析工具，自动获取腾讯财经10年K线 + 东方财富财务报表数据，生成自包含HTML估值回测报告。
+纯算法驱动的A股估值分析工具，自动获取腾讯财经10年K线 + 同花顺iFinD财务报表数据（东财兜底），生成自包含HTML估值回测报告。
 
 **无需部署后端服务、无需数据库、无需AI，本地 Python 即可运行。**
 
 ## 环境要求
 
 - Python 3.6+ 
-- 网络访问（腾讯财经 + 东方财富 API）
+- 网络访问（腾讯财经 + iFinD 数据接口，需 `artifacts/.cache/ths_credentials.json` 凭证）
 
 ## 快速开始
 
@@ -45,7 +45,6 @@ python scripts/build_report.py <股票代码> --model <模型类型> [可选参�
 交易时段（9:30-15:00）运行 `build_report.py` 时，若实时接口返回了当日价格且 K 线最后一天早于今天，会自动追加一个**盘中虚拟点**参与评分：
 
 - 实时价（无开高低，均用现价）作为虚拟最后一天，图表中以橙色圆点标记 **“盘中实时”**
-- 盘中成交量不完整，该点自动**剔除量能因子**，其余因子权重重新归一化
 - 盘中点仅内存拼接，**不写入缓存**；收盘后正式 K 线包含当日，盘中点自动消失
 
 ```bash
@@ -67,15 +66,16 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 | `staples` | 必选消费 | PE + PEG + 毛利率稳定性 |
 | `discretionary` | 可选消费 | PE + PEG + 品牌溢价度 |
 | `tech` | 科技制造 | PEG + 研发费用率 |
-| `cyclical` | 周期资源 | PE + 商品价格偏离 + 产能利用率 |
-| `soe` | 央企基建 | PB + 股息率 + 订单增速 + ROE |
+| `cyclical` | 周期资源 | PE + 商品价格偏离 + 股息率 |
+| `soe` | 央企基建 | PB + 股息率 + 订单增速 |
 | `bank` | 银行保险 | PB + ROE + 股息率 + 不良率 |
 | `realestate` | 地产 | NAV折价 + 去化率 + 杠杆率 |
 | `pharma` | 医药消费 | PEG + 营收增速 |
 
 ## 可选因子
 
-未手动指定的可选因子会**自动从东方财富财报数据计算填充**（ROE、毛利率稳定性、营收增速）。
+未手动指定的可选因子会**自动从 iFinD 财报数据计算填充**（ROE 近10年报均值、毛利率稳定性、营收增速）。
+因子体系经 2026-09 审计收敛为 ≤5 个/模型（剔除 IC≈0 的量能与 IC 为负的波动率，见 `.qoder/plans/factor-audit-ifind_20260906.md`）。
 
 | 因子 | 参数 | 示例 | 适用模型 |
 |------|------|------|----------|
@@ -91,7 +91,6 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 | 营收增速 | `--revenue_growth:0.2` | 营收同比 | pharma |
 | 订单增速 | `--order_growth:0.15` | 新签/在手 | soe |
 | 商品价格偏离 | `--commodity_dev:-0.05` | 现价/均价-1 | cyclical |
-| 产能利用率 | `--capacity_util:0.75` | 实际/设计产能 | cyclical |
 
 ## 使用示例
 
@@ -133,8 +132,9 @@ python scripts/batch_rebuild.py --retry
 
 | 数据 | API | 说明 |
 |------|-----|------|
-| K线 | 腾讯财经 `web.ifzq.gtimg.cn` | 前复权日K，自动分批获取10年 |
-| 财务报表 | 东方财富 `datacenter.eastmoney.com` | 年报/半年报/季报核心指标 |
+| K线 | 腾讯财经 `web.ifzq.gtimg.cn`（故障自动切备用域名） | 前复权日K，自动分批获取10年 |
+| 财务报表 | 同花顺 iFinD `ths_*_pit_stock` PIT时点指标（主源） | 年报/半年报/季报核心指标，PIT口径 |
+| 财务报表（兜底） | 东方财富 `datacenter.eastmoney.com` | iFinD 失败时自动降级，带截断防护 |
 
 ## 输出说明
 
@@ -234,10 +234,12 @@ stock-valuation-skill/
 ├── scripts/
 │   ├── build_report.py      # 入口脚本（argparse + 自动获取 + 缓存）
 │   ├── report_generator.py  # 核心生成器（HTML报告）
-│   ├── scoring_engine.py    # 可复用评分引擎（8模型权重+因子评分）
+│   ├── scoring_engine.py    # 可复用评分引擎（8模型×5因子，≤7硬约束）
 │   ├── model_classifier.py  # 基本面特征模型分类器
 │   ├── kline_cache.py       # K线缓存（前复权 + 不复权）与增量更新
-│   ├── financial_fetcher.py # 东方财富财报获取（带本地缓存）+ 估值区间计算
+│   ├── financial_fetcher.py # 财报获取（iFinD主源+东财兜底，带本地缓存）+ 估值区间计算
+│   ├── ths_fetcher.py       # iFinD 财报预热（PIT时点指标，批量拉取写缓存）
+│   ├── factor_analysis.py   # 因子级IC + 引擎版本对比（复用回测引擎）
 │   ├── backtest_engine.py   # Point-in-Time 回测评分（无未来函数）
 │   ├── run_backtest.py      # 回测入口：IC/分层/策略模拟 + 输出
 │   ├── report_builder.py    # 回测 HTML 报告生成
