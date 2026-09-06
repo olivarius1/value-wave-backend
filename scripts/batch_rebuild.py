@@ -107,6 +107,10 @@ def main():
         for t in (r.stdout or '').strip().splitlines():
             if any(k in t for k in ('[警告]', '[auto]', '评分:', '->')):
                 print('  ' + t, flush=True)
+        # stderr 中的数据告警（如财报截断）在成功时也会静默污染缓存，必须透出
+        for t in (r.stderr or '').strip().splitlines():
+            if '[警告]' in t:
+                print('  STDERR: ' + t, flush=True)
         if r.returncode != 0:
             failed.append((name, code))
             tail = (r.stderr or '').strip().splitlines()[-1:]

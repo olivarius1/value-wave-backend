@@ -56,6 +56,9 @@ def fetch_financial_reports(stock_code, exchange, max_reports=40):
     """
     获取股票历年财务报表核心指标（带本地缓存）
 
+    东财端点偶发静默截断（只返回最近~10条且无报错），会导致换挡检测
+    退化为 insufficient_history；重试多次取最大集，仍短于请求数则告警。
+
     Args:
         stock_code: 股票代码, e.g. '600887'
         exchange: 交易所, 'sh' or 'sz'
@@ -64,9 +67,20 @@ def fetch_financial_reports(stock_code, exchange, max_reports=40):
     Returns:
         list of dict, 按报告期从新到旧排列
     """
-    return _cache_financial(
-        stock_code, 'reports',
-        lambda: _fetch_financial_reports_uncached(stock_code, exchange, max_reports))
+    def _load():
+        best = []
+        for attempt in range(3):
+            data = _fetch_financial_reports_uncached(stock_code, exchange, max_reports)
+            if len(data) > len(best):
+                best = data
+            if not data or len(data) >= max_reports:
+                break
+            _time.sleep(1)
+        if best and len(best) < max_reports:
+            print(f"  [警告] {stock_code} 财报仅{len(best)}条 < 请求{max_reports}条"
+                  f"（可能截断或上市时间短，请核对年报覆盖）", file=sys.stderr)
+        return best
+    return _cache_financial(stock_code, 'reports', _load)
 
 
 def _fetch_financial_reports_uncached(stock_code, exchange, max_reports=40):
