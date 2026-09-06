@@ -6,3 +6,6 @@ __pycache__/
 tmp/
 temp/
 artifacts/
+vendor/
+ths_key.txt
+.venv*/

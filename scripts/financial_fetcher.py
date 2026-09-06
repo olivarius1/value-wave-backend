@@ -56,8 +56,8 @@ def fetch_financial_reports(stock_code, exchange, max_reports=40):
     """
     获取股票历年财务报表核心指标（带本地缓存）
 
-    东财端点偶发静默截断（只返回最近~10条且无报错），会导致换挡检测
-    退化为 insufficient_history；重试多次取最大集，仍短于请求数则告警。
+    数据源: iFinD(主源，见 ths_fetcher.py) → 失败降级东财(兜底，截断防护保留)。
+    两者产出同 schema 缓存，30天内直接复用不发起请求。
 
     Args:
         stock_code: 股票代码, e.g. '600887'
@@ -68,19 +68,43 @@ def fetch_financial_reports(stock_code, exchange, max_reports=40):
         list of dict, 按报告期从新到旧排列
     """
     def _load():
-        best = []
-        for attempt in range(3):
-            data = _fetch_financial_reports_uncached(stock_code, exchange, max_reports)
-            if len(data) > len(best):
-                best = data
-            if not data or len(data) >= max_reports:
-                break
-            _time.sleep(1)
-        if best and len(best) < max_reports:
-            print(f"  [警告] {stock_code} 财报仅{len(best)}条 < 请求{max_reports}条"
-                  f"（可能截断或上市时间短，请核对年报覆盖）", file=sys.stderr)
-        return best
+        data = _load_ths_reports(stock_code)
+        if data is None:
+            data = _load_eastmoney_reports(stock_code, exchange, max_reports)
+        return data
     return _cache_financial(stock_code, 'reports', _load)
+
+
+def _load_eastmoney_reports(stock_code, exchange, max_reports=40):
+    """东财兜底：带截断防护——故障窗口只返回最近~10条且 success=true 无报错，重试取最大集"""
+    best = []
+    for attempt in range(3):
+        data = _fetch_financial_reports_uncached(stock_code, exchange, max_reports)
+        if len(data) > len(best):
+            best = data
+        if not data or len(data) >= max_reports:
+            break
+        _time.sleep(1)
+    if best and len(best) < max_reports:
+        print(f"  [警告] {stock_code} 东财财报仅{len(best)}条 < 请求{max_reports}条"
+              f"（可能截断或上市时间短，请核对年报覆盖）", file=sys.stderr)
+    return best
+
+
+def _load_ths_reports(stock_code):
+    """iFinD 主源：单股拉取并写缓存，返回报告列表；SDK 缺失或失败返回 None（降级东财）"""
+    try:
+        import ths_fetcher
+    except ImportError:
+        return None
+    try:
+        ths_fetcher.fetch_watchlist_reports([stock_code])
+        path = os.path.join(_FIN_CACHE_DIR, f'{stock_code}_reports.json')
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"  [financial_fetcher] iFinD获取 {stock_code} 财报失败: {e}，降级东财", file=sys.stderr)
+        return None
 
 
 def _fetch_financial_reports_uncached(stock_code, exchange, max_reports=40):
