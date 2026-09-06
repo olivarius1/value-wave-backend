@@ -28,7 +28,7 @@ from financial_fetcher import (
 from scoring_engine import (
     MODEL_PRESETS, resolve_active_weights,
     score_pe, score_pb, score_peg, score_ma_deviation,
-    score_volume, score_volatility,
+    score_volume, score_volatility, ret_std20,
     OPTIONAL_SCORE_FUNCS,
 )
 
@@ -45,8 +45,6 @@ def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_m
     # 取最后一天数据
     last = kline_data[-1]
     close = float(last[2])
-    high = float(last[3])
-    low = float(last[4])
     volume = float(last[5])
 
     # MA20 / MA60 / VOL_MA20
@@ -74,7 +72,7 @@ def compute_latest_score(kline_data, pe, pb, price, pe_min, pe_max, pb_min, pb_m
         elif fk == 'vol':
             s = score_volume(volume, vol_ma20)
         elif fk == 'vola':
-            s = score_volatility(close, high, low)
+            s = score_volatility(ret_std20([float(kline_data[j][2]) for j in range(max(0, n - 21), n)]))
         elif fk in OPTIONAL_SCORE_FUNCS and optional_factors and optional_factors.get(fk) is not None:
             s = OPTIONAL_SCORE_FUNCS[fk](optional_factors[fk])
         else:

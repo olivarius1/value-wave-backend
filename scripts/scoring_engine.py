@@ -45,26 +45,26 @@ MODEL_PRESETS = {
     'cyclical': {
         'name': '周期资源',
         'desc': '盈利随大宗商品价格大幅波动，需追踪商品价格位置与产能周期；股息率修正股东回报',
-        'weights_label': 'PE(22.5%) + PB(10.8%) + 商品价格偏离(18%) + MA偏离(13.5%) + 量能(9%) + 波动率(9%) + 产能利用率(7.2%) + 股息率(10%)',
-        'weights': {'pe': 0.225, 'pb': 0.108, 'commodity_dev': 0.18, 'ma': 0.135, 'vol': 0.09, 'vola': 0.09, 'capacity_util': 0.072, 'dividend_yield': 0.10},
+        'weights_label': 'PE(24.3%) + PB(11.6%) + 商品价格偏离(19.4%) + MA偏离(14.5%) + 量能(9.7%) + 波动率(9.7%) + 股息率(10.8%)',
+        'weights': {'pe': 0.243, 'pb': 0.116, 'commodity_dev': 0.194, 'ma': 0.145, 'vol': 0.097, 'vola': 0.097, 'dividend_yield': 0.108},
     },
     'soe': {
         'name': '央企基建',
         'desc': '高股息、订单驱动、经营稳健，股息率与PB为估值核心',
-        'weights_label': 'PE(15%) + PB(18%) + 股息率(20%) + MA偏离(12%) + 量能(8%) + 波动率(8%) + 订单增速(15%) + ROE(4%)',
-        'weights': {'pe': 0.15, 'pb': 0.18, 'dividend_yield': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'order_growth': 0.15, 'roe': 0.04},
+        'weights_label': 'PE(15.6%) + PB(18.8%) + 股息率(20.9%) + MA偏离(12.5%) + 量能(8.3%) + 波动率(8.3%) + 订单增速(15.6%)',
+        'weights': {'pe': 0.156, 'pb': 0.188, 'dividend_yield': 0.209, 'ma': 0.125, 'vol': 0.083, 'vola': 0.083, 'order_growth': 0.156},
     },
     'bank': {
         'name': '银行保险',
         'desc': '重资产金融业态，PB+ROE为估值核心，资产质量是关键风险变量',
         'weights_label': 'PB(30%) + ROE(25%) + 股息率(15%) + 不良/偿付(12%) + MA偏离(10%) + 波动率(8%)',
-        'weights': {'pe': 0.00, 'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
+        'weights': {'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
     },
     'realestate': {
         'name': '地产',
         'desc': '重资产高杠杆，NAV折价与去化率决定估值中枢',
         'weights_label': 'NAV折价(25%) + PB(20%) + 去化率(20%) + MA偏离(12%) + 量能(8%) + 杠杆率(10%) + 波动率(5%)',
-        'weights': {'pe': 0.00, 'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
+        'weights': {'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
     },
     'pharma': {
         'name': '医药消费',
@@ -175,18 +175,27 @@ def score_volume(volume, vol_ma20):
         return 20
 
 
-def score_volatility(close, high, low):
-    """波动率评分：波动越低分越高"""
-    if close <= 0:
+def ret_std20(closes):
+    """近20日日收益率总体标准差（需21个收盘价）；样本不足或含非正值返回 None（中性）"""
+    if len(closes) < 21 or any(c <= 0 for c in closes):
+        return None
+    rets = [closes[j] / closes[j - 1] - 1 for j in range(1, len(closes))]
+    m = sum(rets) / len(rets)
+    return (sum((r - m) ** 2 for r in rets) / len(rets)) ** 0.5
+
+
+def score_volatility(ret_std20):
+    """波动率评分：20日滚动日收益率标准差，波动越低分越高。
+    （2026-09审计：旧版用单日振幅(high-low)/close，噪声过大，非真实波动率口径）"""
+    if ret_std20 is None:
         return 50
-    vol = (high - low) / close
-    if vol < 0.01:
+    if ret_std20 < 0.01:
         return 85
-    elif vol < 0.02:
+    elif ret_std20 < 0.02:
         return 70
-    elif vol < 0.03:
+    elif ret_std20 < 0.03:
         return 55
-    elif vol < 0.05:
+    elif ret_std20 < 0.05:
         return 40
     else:
         return 20
@@ -684,6 +693,8 @@ def compute_daily_scores(kline, active_weights, factor_values, params, regime_in
         ma20 = sum(kline[j]['close'] for j in range(max(0, i - 19), i + 1)) / min(20, i + 1)
         ma60 = sum(kline[j]['close'] for j in range(max(0, i - 59), i + 1)) / min(60, i + 1)
         vol_ma20 = sum(kline[j]['volume'] for j in range(max(0, i - 19), i + 1)) / min(20, i + 1)
+        # 波动率：近20日日收益率总体标准差（样本不足计中性，不给噪声分）
+        vola20 = ret_std20([kline[j]['close'] for j in range(max(0, i - 20), i + 1)])
 
         # PE/PB：优先用真实历史EPS/BPS（按披露时点生效），否则回退到恒定当前EPS反推
         # （no_pe_fallback=True 时无历史数据计中性分，回测消除未来函数）
@@ -727,7 +738,7 @@ def compute_daily_scores(kline, active_weights, factor_values, params, regime_in
             elif fk == 'vol':
                 s = score_volume(volume, vol_ma20)
             elif fk == 'vola':
-                s = score_volatility(close, high, low)
+                s = score_volatility(vola20)
             elif fk == 'dividend_yield':
                 # 动态股息率：若提供每股分红DPS，用 dps/当日收盘价 逐日计算（A2方案，2026-08）
                 # 历史股价低点 → 股息率自动升高 → 高分，与估值目标同向；无DPS时退化为恒定当前股息率
