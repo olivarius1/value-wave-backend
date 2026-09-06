@@ -23,54 +23,57 @@ from datetime import datetime as _dt, timedelta as _td
 from statistics import median as _median
 
 # ===== 8种模型权重预设 =====
+# 2026-09 因子审计：剔除量能(vol, IC≈0)与波动率(vola, IC为负)两技术因子——
+# 回测 250 日 pooled IC：量能+0.004 纯噪声、波动率-0.12 方向相反（见 .qoder/plans 因子审计记录），
+# 权重按比例摊回估值/基本面因子；ma 保留（60日 IC=0.04，唯一有短周期择时信息的技术因子）。
 MODEL_PRESETS = {
     'staples': {
         'name': '必选消费',
         'desc': '需求刚性、业绩稳定、现金流充沛，PE+毛利率稳定性为估值锚',
-        'weights_label': 'PE(28%) + PB(12%) + PEG(20%) + MA偏离(12%) + 量能(8%) + 波动率(10%) + 毛利率稳定性(10%)',
-        'weights': {'pe': 0.28, 'pb': 0.12, 'peg': 0.20, 'ma': 0.12, 'vol': 0.08, 'vola': 0.10, 'margin_stability': 0.10},
+        'weights_label': 'PE(34.2%) + PB(14.6%) + PEG(24.4%) + MA偏离(14.6%) + 毛利率稳定性(12.2%)',
+        'weights': {'pe': 0.342, 'pb': 0.146, 'peg': 0.244, 'ma': 0.146, 'margin_stability': 0.122},
     },
     'discretionary': {
         'name': '可选消费',
         'desc': '品牌溢价显著、受消费周期影响，PEG与品牌力为核心估值锚',
-        'weights_label': 'PE(22%) + PB(12%) + PEG(22%) + MA偏离(15%) + 量能(8%) + 波动率(10%) + 品牌溢价度(11%)',
-        'weights': {'pe': 0.22, 'pb': 0.12, 'peg': 0.22, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'brand_premium': 0.11},
+        'weights_label': 'PE(26.9%) + PB(14.6%) + PEG(26.8%) + MA偏离(18.3%) + 品牌溢价度(13.4%)',
+        'weights': {'pe': 0.269, 'pb': 0.146, 'peg': 0.268, 'ma': 0.183, 'brand_premium': 0.134},
     },
     'tech': {
         'name': '科技制造',
         'desc': '高研发投入、高增速，PEG为最敏感因子，关注成长确定性',
-        'weights_label': 'PE(20%) + PB(12%) + PEG(25%) + MA偏离(15%) + 量能(8%) + 波动率(10%) + 研发费用率(10%)',
-        'weights': {'pe': 0.20, 'pb': 0.12, 'peg': 0.25, 'ma': 0.15, 'vol': 0.08, 'vola': 0.10, 'rd_ratio': 0.10},
+        'weights_label': 'PE(24.4%) + PB(14.6%) + PEG(30.5%) + MA偏离(18.3%) + 研发费用率(12.2%)',
+        'weights': {'pe': 0.244, 'pb': 0.146, 'peg': 0.305, 'ma': 0.183, 'rd_ratio': 0.122},
     },
     'cyclical': {
         'name': '周期资源',
         'desc': '盈利随大宗商品价格大幅波动，需追踪商品价格位置与产能周期；股息率修正股东回报',
-        'weights_label': 'PE(24.3%) + PB(11.6%) + 商品价格偏离(19.4%) + MA偏离(14.5%) + 量能(9.7%) + 波动率(9.7%) + 股息率(10.8%)',
-        'weights': {'pe': 0.243, 'pb': 0.116, 'commodity_dev': 0.194, 'ma': 0.145, 'vol': 0.097, 'vola': 0.097, 'dividend_yield': 0.108},
+        'weights_label': 'PE(30.1%) + PB(14.4%) + 商品价格偏离(24.1%) + MA偏离(18%) + 股息率(13.4%)',
+        'weights': {'pe': 0.301, 'pb': 0.144, 'commodity_dev': 0.241, 'ma': 0.18, 'dividend_yield': 0.134},
     },
     'soe': {
         'name': '央企基建',
         'desc': '高股息、订单驱动、经营稳健，股息率与PB为估值核心',
-        'weights_label': 'PE(15.6%) + PB(18.8%) + 股息率(20.9%) + MA偏离(12.5%) + 量能(8.3%) + 波动率(8.3%) + 订单增速(15.6%)',
-        'weights': {'pe': 0.156, 'pb': 0.188, 'dividend_yield': 0.209, 'ma': 0.125, 'vol': 0.083, 'vola': 0.083, 'order_growth': 0.156},
+        'weights_label': 'PE(18.7%) + PB(22.5%) + 股息率(25.1%) + MA偏离(15%) + 订单增速(18.7%)',
+        'weights': {'pe': 0.187, 'pb': 0.225, 'dividend_yield': 0.251, 'ma': 0.15, 'order_growth': 0.187},
     },
     'bank': {
         'name': '银行保险',
         'desc': '重资产金融业态，PB+ROE为估值核心，资产质量是关键风险变量',
-        'weights_label': 'PB(30%) + ROE(25%) + 股息率(15%) + 不良/偿付(12%) + MA偏离(10%) + 波动率(8%)',
-        'weights': {'pb': 0.30, 'roe': 0.25, 'dividend_yield': 0.15, 'npl_ratio': 0.12, 'ma': 0.10, 'vola': 0.08},
+        'weights_label': 'PB(32.6%) + ROE(27.2%) + 股息率(16.3%) + 不良/偿付(13%) + MA偏离(10.9%)',
+        'weights': {'pb': 0.326, 'roe': 0.272, 'dividend_yield': 0.163, 'npl_ratio': 0.13, 'ma': 0.109},
     },
     'realestate': {
         'name': '地产',
         'desc': '重资产高杠杆，NAV折价与去化率决定估值中枢',
-        'weights_label': 'NAV折价(25%) + PB(20%) + 去化率(20%) + MA偏离(12%) + 量能(8%) + 杠杆率(10%) + 波动率(5%)',
-        'weights': {'pb': 0.20, 'nav_discount': 0.25, 'clearance_rate': 0.20, 'ma': 0.12, 'vol': 0.08, 'leverage': 0.10, 'vola': 0.05},
+        'weights_label': 'NAV折价(28.7%) + PB(23%) + 去化率(23%) + MA偏离(13.8%) + 杠杆率(11.5%)',
+        'weights': {'pb': 0.23, 'nav_discount': 0.287, 'clearance_rate': 0.23, 'ma': 0.138, 'leverage': 0.115},
     },
     'pharma': {
         'name': '医药消费',
         'desc': '政策敏感、研发驱动，营收增速与PEG反映成长预期',
-        'weights_label': 'PE(20%) + PB(10%) + PEG(25%) + MA偏离(12%) + 量能(8%) + 波动率(8%) + 营收增速(17%)',
-        'weights': {'pe': 0.20, 'pb': 0.10, 'peg': 0.25, 'ma': 0.12, 'vol': 0.08, 'vola': 0.08, 'revenue_growth': 0.17},
+        'weights_label': 'PE(23.8%) + PB(11.9%) + PEG(29.8%) + MA偏离(14.3%) + 营收增速(20.2%)',
+        'weights': {'pe': 0.238, 'pb': 0.119, 'peg': 0.298, 'ma': 0.143, 'revenue_growth': 0.202},
     },
 }
 
