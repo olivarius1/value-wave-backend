@@ -56,16 +56,27 @@ def save_cache(stock_code, exchange, kline_data, pe=0, pb=0, price=0, name='', s
         json.dump(cache, f, ensure_ascii=False)
 
 
+# 同一接口的备用域名，主域故障（如整体501）时依次切换
+_KLINE_HOSTS = (
+    'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get',
+    'http://ifzq.gtimg.cn/appstock/app/fqkline/get',
+    'https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get',
+)
+
+
 def _fetch_kline_api(full_code, start_date, end_date, fq='qfq'):
-    """从腾讯财经API获取一批K线数据（fq='' 时不复权）"""
-    url = (
-        f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
-        f"?param={full_code},day,{start_date},{end_date},500,{fq}"
-    )
+    """从腾讯财经API获取一批K线数据（fq='' 时不复权，主域失败自动切换备用域名）"""
+    query = f"param={full_code},day,{start_date},{end_date},500,{fq}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read())
+    last_err = None
+    for base in _KLINE_HOSTS:
+        req = urllib.request.Request(f"{base}?{query}", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            last_err = e
+    raise last_err
 
 
 def _parse_kline_response(jd, full_code):
