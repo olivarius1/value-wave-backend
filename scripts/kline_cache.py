@@ -230,7 +230,7 @@ def fetch_incremental(stock_code, exchange, last_date, fq='qfq', check_days=30, 
         return [], {'pe': 0, 'pb': 0, 'price': 0, 'name': ''}, 0
 
 
-def get_kline(stock_code, exchange=None, no_cache=False):
+def get_kline(stock_code, exchange=None, no_cache=False, years=10):
     """
     统一入口：获取K线数据（自动缓存+增量）
 
@@ -238,6 +238,9 @@ def get_kline(stock_code, exchange=None, no_cache=False):
         stock_code: 股票代码
         exchange: 交易所 (sh/sz)，None则自动推断
         no_cache: 强制全量刷新
+        years: 回溯年数（默认10=报告链路口径）。years>10 时使用独立缓存后缀
+               _kline{years}，与报告的 10 年缓存隔离（报告的 PE/PB 分位窗口
+               是 10 年口径，不能被更长历史污染）
 
     Returns:
         dict: {
@@ -248,12 +251,13 @@ def get_kline(stock_code, exchange=None, no_cache=False):
     # 自动推断交易所
     if not exchange:
         exchange = 'sh' if stock_code.startswith('6') else 'sz'
+    suffix = '_kline' if years <= 10 else f'_kline{years}'
 
     today_str = datetime.date.today().strftime('%Y-%m-%d')
 
     # 尝试使用缓存
     if not no_cache:
-        cache = load_cache(stock_code)
+        cache = load_cache(stock_code, suffix=suffix)
         if cache and cache.get('data'):
             if cache.get('updated') == today_str:
                 # 今天已更新，直接使用
@@ -277,11 +281,12 @@ def get_kline(stock_code, exchange=None, no_cache=False):
                 # （前复权价以最新价为基准，除权后历史价整体重算；增量拼接会导致除权日前后断层，须全量重拉）
                 if base_shift > 0.5:
                     print(f"  检测到除权除息(复权基准偏移 {base_shift:.2f}%)，全量重拉K线...")
-                    kline_data, qt_info = fetch_full(stock_code, exchange)
+                    kline_data, qt_info = fetch_full(stock_code, exchange, years=years)
                     if kline_data:
                         save_cache(stock_code, exchange, kline_data,
                                    qt_info['pe'], qt_info['pb'], qt_info['price'], qt_info['name'],
-                                   qt_date=qt_info.get('date', ''), volume=qt_info.get('volume', 0))
+                                   qt_date=qt_info.get('date', ''), volume=qt_info.get('volume', 0),
+                                   suffix=suffix)
                     return {
                         'kline': kline_data,
                         'pe': qt_info['pe'], 'pb': qt_info['pb'], 'price': qt_info['price'],
@@ -302,7 +307,8 @@ def get_kline(stock_code, exchange=None, no_cache=False):
                 qt_date = qt_info.get('date', '') or cache.get('qt_date', '')
                 volume = qt_info.get('volume', 0) or cache.get('volume', 0)
                 # 保存更新后的缓存
-                save_cache(stock_code, exchange, cache['data'], pe, pb, price, name, qt_date=qt_date, volume=volume)
+                save_cache(stock_code, exchange, cache['data'], pe, pb, price, name,
+                           qt_date=qt_date, volume=volume, suffix=suffix)
                 return {
                     'kline': cache['data'],
                     'pe': pe, 'pb': pb, 'price': price, 'name': name,
@@ -310,12 +316,13 @@ def get_kline(stock_code, exchange=None, no_cache=False):
                 }
 
     # 全量获取
-    print(f"  全量获取10年K线数据...")
-    kline_data, qt_info = fetch_full(stock_code, exchange)
+    print(f"  全量获取{years}年K线数据...")
+    kline_data, qt_info = fetch_full(stock_code, exchange, years=years)
     if kline_data:
         save_cache(stock_code, exchange, kline_data,
                    qt_info['pe'], qt_info['pb'], qt_info['price'], qt_info['name'],
-                   qt_date=qt_info.get('date', ''), volume=qt_info.get('volume', 0))
+                   qt_date=qt_info.get('date', ''), volume=qt_info.get('volume', 0),
+                   suffix=suffix)
     return {
         'kline': kline_data,
         'pe': qt_info['pe'],
@@ -327,23 +334,25 @@ def get_kline(stock_code, exchange=None, no_cache=False):
     }
 
 
-def get_kline_raw(stock_code, exchange=None, no_cache=False):
+def get_kline_raw(stock_code, exchange=None, no_cache=False, years=10):
     """
     获取不复权K线（独立缓存 {code}_raw_kline.json）
 
     用途：历史 PE/PB 必须用当日真实交易价（前复权价会随最新除权整体缩放，
     导致历史 PE 失真）。收益/MA/量能因子仍用前复权（qfq 缓存）。
+    years>10 时缓存后缀 _raw_kline{years}，与报告链路的 10 年缓存隔离。
 
     Returns:
         [[date, open, close, high, low, volume], ...] 或 []
     """
     if not exchange:
         exchange = 'sh' if stock_code.startswith('6') else 'sz'
+    suffix = '_raw_kline' if years <= 10 else f'_raw_kline{years}'
 
     today_str = datetime.date.today().strftime('%Y-%m-%d')
 
     if not no_cache:
-        cache = load_cache(stock_code, suffix='_raw_kline')
+        cache = load_cache(stock_code, suffix=suffix)
         if cache and cache.get('data'):
             if cache.get('updated') == today_str:
                 print(f"  不复权缓存命中: {len(cache['data'])}天 (更新于今日)")
@@ -358,13 +367,13 @@ def get_kline_raw(stock_code, exchange=None, no_cache=False):
                         cache['data'].append(row)
             save_cache(stock_code, exchange, cache['data'],
                        cache.get('pe', 0), cache.get('pb', 0),
-                       cache.get('price', 0), cache.get('name', ''), suffix='_raw_kline')
+                       cache.get('price', 0), cache.get('name', ''), suffix=suffix)
             cache['data'].sort(key=lambda r: r[0])
             return cache['data']
 
-    print(f"  全量获取10年不复权K线数据...")
-    kline_data, qt_info = fetch_full(stock_code, exchange, fq='')
+    print(f"  全量获取{years}年不复权K线数据...")
+    kline_data, qt_info = fetch_full(stock_code, exchange, years=years, fq='')
     if kline_data:
         save_cache(stock_code, exchange, kline_data,
-                   qt_info['pe'], qt_info['pb'], qt_info['price'], qt_info['name'], suffix='_raw_kline')
+                   qt_info['pe'], qt_info['pb'], qt_info['price'], qt_info['name'], suffix=suffix)
     return kline_data

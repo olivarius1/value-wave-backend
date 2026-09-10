@@ -23,6 +23,7 @@
 import argparse
 import datetime
 import json
+import math
 import os
 import sys
 import time
@@ -33,23 +34,36 @@ _FIN_CACHE_DIR = os.path.join(_SKILL_DIR, 'artifacts', '.cache', 'financial')
 _CREDS_PATH = os.path.join(_SKILL_DIR, 'artifacts', '.cache', 'ths_credentials.json')
 _WATCHLIST = os.path.join(_SKILL_DIR, 'watchlist.txt')
 
-# 历史起点与东财 max_reports=40(约10年季报) 对齐
-_PERIOD_START_YEAR = 2016
+# 历史起点 2005：跨牛熊回测需要 2008-2015 切片的基本面因子成分一致
+# （东财兜底 max_reports=80 份季报同步对齐 20 年）
+_PERIOD_START_YEAR = 2005
 _PIT_INDICATORS = ('ths_np_atoopc_pit_stock', 'ths_revenue_pit_stock', 'ths_operating_cost_pit_stock')
 _ROE_INDICATOR = 'ths_roe_stock'
 _CHUNK = 25          # 单次调用最大股票数
 _CALL_SLEEP = 0.15   # 调用间隔，避开接口频率限制
 
 
-def _login():
-    """登录 iFinD（进程内一次），返回 iFinDPy 模块"""
-    from iFinDPy import THS_iFinDLogin, THS_GetErrorInfo
+def _login(thspy=None):
+    """登录 iFinD（幂等，进程内一次）。账号单点登录：其他进程登录会踢掉本进程（err=-1010），
+    由 _bd_retry 检测后重登。返回 iFinDPy 模块"""
+    if thspy is None:
+        import iFinDPy
+        thspy = iFinDPy
+    if getattr(thspy, '_ths_logged_in', False):
+        return thspy
     with open(_CREDS_PATH, encoding='utf-8') as f:
         creds = json.load(f)
-    code = THS_iFinDLogin(creds['username'], creds['password'])
+    code = thspy.THS_iFinDLogin(creds['username'], creds['password'])
     if code != 0:
-        raise RuntimeError(f'iFinD登录失败 err={code}: {THS_GetErrorInfo(code)}')
-    return sys.modules['iFinDPy']
+        # 错误信息可能含 GBK 字节，容错解码
+        try:
+            msg = thspy.THS_GetErrorInfo(code)
+            msg = msg.decode('utf-8', errors='replace') if isinstance(msg, bytes) else str(msg)
+        except Exception:
+            msg = ''
+        raise RuntimeError(f'iFinD登录失败 err={code}: {msg}')
+    thspy._ths_logged_in = True
+    return thspy
 
 
 def _periods(today=None):
@@ -69,17 +83,39 @@ def _thsscodes(codes):
 
 
 def _bd_retry(thspy, codes_str, indicator, param, retries=3):
-    """单指标批量查询，dict/object 两种返回归一化为 (errorcode, dataframe|None, errmsg)"""
+    """单指标批量查询，dict/object 两种返回归一化为 (errorcode, dataframe|None, errmsg)。
+    err=-1010（被其他进程登录踢下线）时自动重登后重试"""
+    last_ec, last_data, last_msg = None, None, ''
     for attempt in range(1, retries + 1):
         r = thspy.THS_BD(codes_str, indicator, param)
         ec = r.get('errorcode') if isinstance(r, dict) else r.errorcode
         data = None if isinstance(r, dict) else r.data
         msg = r.get('errmsg', '') if isinstance(r, dict) else getattr(r, 'errmsg', '')
+        if isinstance(msg, bytes):
+            msg = msg.decode('utf-8', errors='replace')
         if ec == 0:
             return 0, data, ''
-        if attempt < retries:
+        last_ec, last_data, last_msg = ec, data, msg
+        if ec == -1010:
+            try:
+                thspy._ths_logged_in = False
+                _login(thspy)
+            except Exception as e:
+                return ec, data, f'{msg} (重登失败: {e})'
+        elif attempt < retries:
             time.sleep(attempt * 2)
-    return ec, data, msg
+    return last_ec, last_data, last_msg
+
+
+def _clean(v):
+    """批量模式返回的 None 是 NaN 而非 None（单股模式才是 None），统一归一"""
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if math.isnan(f) else f
 
 
 def fetch_watchlist_reports(codes, anchor_date=None):
@@ -104,7 +140,7 @@ def fetch_watchlist_reports(codes, anchor_date=None):
                     raise RuntimeError(f'{ind}@{pstr} 批量查询失败 err={ec} {msg}')
                 for _, row in df.iterrows():
                     code = row['thscode'].split('.')[0]
-                    rows[code].setdefault(period, {})[ind] = row[ind]
+                    rows[code].setdefault(period, {})[ind] = _clean(row[ind])
                 time.sleep(_CALL_SLEEP)
             ec, df, msg = _bd_retry(thspy, ','.join(chunk), _ROE_INDICATOR, period.strftime('%Y-%m-%d'))
             total_calls += 1
@@ -112,7 +148,7 @@ def fetch_watchlist_reports(codes, anchor_date=None):
                 raise RuntimeError(f'{_ROE_INDICATOR}@{pstr} 批量查询失败 err={ec} {msg}')
             for _, row in df.iterrows():
                 code = row['thscode'].split('.')[0]
-                rows[code].setdefault(period, {})[_ROE_INDICATOR] = row[_ROE_INDICATOR]
+                rows[code].setdefault(period, {})[_ROE_INDICATOR] = _clean(row[_ROE_INDICATOR])
             time.sleep(_CALL_SLEEP)
         print(f'  进度 {min(chunk_start + _CHUNK, len(codes))}/{len(codes)} 只', flush=True)
 

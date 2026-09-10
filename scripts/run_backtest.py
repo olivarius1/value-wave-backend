@@ -48,6 +48,9 @@ NO_TRADE_COST = True          # 简化假设：无交易成本
 PCT_BUY = 0.80                # 分数处于自身历史 80th 以上买入
 PCT_SELL = 0.20               # 分数处于自身历史 20th 以下卖出
 PCT_MIN_SAMPLES = 50          # 阈值样本下限（与区间 MIN_RANGE_SAMPLES 一致）
+# 回测数据回溯年数：跨多轮牛熊（2008/2015/2018/2022-2024）。
+# 用独立缓存后缀 _kline20，与报告链路的 10 年口径隔离（报告的 PE/PB 分位窗口是 10 年设计）
+BACKTEST_YEARS = 20
 
 
 def load_watchlist(path):
@@ -226,8 +229,9 @@ def compute_percentile_thresholds(stock_daily, lo=PCT_SELL, hi=PCT_BUY, min_samp
             by_seg.setdefault(_seg_key(d['date']), []).append(d['score'])
         seg_thr = {}
         for key in sorted(by_seg):
-            # expanding：累计截至本切片起点的所有历史分数
-            scores = [s for k in sorted(by_seg) if k <= key for s in by_seg[k]]
+            # expanding：累计截至本切片起点的所有历史分数（不含本切片——
+            # 切片内的分数在切片起点时点尚未产生，计入即构成前视）
+            scores = [s for k in sorted(by_seg) if k < key for s in by_seg[k]]
             if len(scores) < min_samples:
                 continue
             ss = sorted(scores)
@@ -272,23 +276,27 @@ def _signal_fn(mode, score_by, pct_thr):
 
 # ===== 策略模拟 =====
 
-def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=None):
+def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=None, cost=0.0):
     """
     等权组合策略模拟，支持两种信号口径：
     - mode='abs'：绝对分数（>=SCORE_BUY 持仓 / <SCORE_SELL 空仓）
     - mode='pct'：个股历史分数百分位（>=自身 p80 持仓 / <=自身 p20 空仓）
     其余逻辑相同：中间区保持前态；信号滞后1日（T日信号→T+1日持仓）；基准 = 全部股票等权买入持有。
+
+    扩张式宇宙（2026-09）：起点 = 最早有分数的股票（原为全体股票齐步走，被最晚上市的
+    股票拖住）；个股在自身首个分数日前不入池、信号为 None 时保持空仓，自然滚动加入。
+    cost: 单边交易成本（每次持仓状态翻转收取），用于组合间的成本敏感性对比。
     """
     # 公共日历：全部股票日期并集
     all_dates = sorted(set().union(*[set(dc.keys()) for dc in daily_close.values()]))
-    # 公共起点：所有股票都有首个分数的日期之后
+    # 起点：最早出现分数的日期（此前无任何信号，模拟无意义）
     first_scores = {}
     for code, daily in stock_daily.items():
         if daily:
             first_scores[code] = daily[0]['date']
     if not first_scores:
         return None
-    common_start = max(first_scores.values())
+    common_start = min(first_scores.values())
     # 公共终点：最后一个分数日（时间段截断后净值曲线不应延伸到最新数据）
     common_end = max(daily[-1]['date'] for daily in stock_daily.values())
     dates = [d for d in all_dates if common_start <= d <= common_end]
@@ -309,6 +317,7 @@ def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=Non
         # 组合当日收益（用 T-1 日信号决定持仓）
         day_ret_s = []
         day_ret_b = []
+        flips_today = 0
         for code in daily_close:
             closes = close_by[code]
             if d not in closes or i == 0:
@@ -330,12 +339,16 @@ def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=Non
             # 中间区（或阈值样本不足）：保持前态
             if holding != prev_pos.get(code, False):
                 turnover_days += 1
+                flips_today += 1
             prev_pos[code] = holding
             if holding:
                 day_ret_s.append(ret)
         if not day_ret_b:
             continue
+        # 成本近似：当日翻转次数按宇宙宽度均摊收取单边成本（满仓时≈每持仓股一次）
         r_s = sum(day_ret_s) / len(day_ret_s) if day_ret_s else 0.0
+        if cost > 0 and flips_today:
+            r_s -= cost * flips_today / len(day_ret_b)
         r_b = sum(day_ret_b) / len(day_ret_b)
         nav_s *= (1 + r_s)
         nav_b *= (1 + r_b)
@@ -413,8 +426,8 @@ def main():
         exchange = 'sh' if code.startswith('6') else 'sz'
         try:
             say(f"[{si + 1}/{len(stocks)}] {st['name']}({code}) model={model}")
-            qfq = get_kline(code, exchange, no_cache=args.refresh_data)['kline']
-            raw = get_kline_raw(code, exchange, no_cache=args.refresh_data)
+            qfq = get_kline(code, exchange, no_cache=args.refresh_data, years=BACKTEST_YEARS)['kline']
+            raw = get_kline_raw(code, exchange, no_cache=args.refresh_data, years=BACKTEST_YEARS)
             pershare = fetch_pershare_data(code, exchange)
             reports = fetch_financial_reports(code, exchange)
             info = fetch_stock_info(code, exchange)
@@ -459,6 +472,32 @@ def main():
     say("计算 IC / 分层 / 策略...")
     ic = compute_ic(stock_daily, fut_map, FUTURE_HORIZONS)
     layers = compute_layers(stock_daily, fut_map, FUTURE_HORIZONS)
+
+    # 分段（牛熊）信号诊断：每段单独 IC/分层。用途边界见 market_regimes.py——
+    # 段内逐日观测不涉及入场时点；段收益的"段首入场"假设不可用于策略评价（用网格脚本的 rolling-entry）
+    regime_stats = {}
+    try:
+        from market_regimes import compute_regimes, assign_regimes
+        regimes = compute_regimes()
+        regime_of = assign_regimes(
+            sorted({d['date'] for daily in stock_daily.values() for d in daily}), regimes)
+        by_label = {}
+        for code, daily in stock_daily.items():
+            for d in daily:
+                by_label.setdefault(regime_of.get(d['date'], 'pre_index'), {}).setdefault(code, []).append(d)
+        for label, sub in by_label.items():
+            n = sum(len(v) for v in sub.values())
+            if n < 3000:  # 样本过少的段噪声主导，不出统计
+                continue
+            regime_stats[label] = {
+                'samples': n, 'stocks': len(sub),
+                'ic': compute_ic(sub, fut_map, FUTURE_HORIZONS),
+                'layers': compute_layers(sub, fut_map, FUTURE_HORIZONS),
+            }
+        say(f"分段诊断: {len(regime_stats)} 段 ({', '.join(sorted(regime_stats))})")
+    except Exception as e:
+        say(f"分段诊断失败(不影响主流程): {e}")
+
     strategy = simulate_strategy(stock_daily, daily_close, fut_map, mode='abs')
     # 百分位策略：个股历史分数分布 80th/20th（PIT 重算）
     pct_thr = compute_percentile_thresholds(stock_daily)
@@ -511,7 +550,8 @@ def main():
     with open(os.path.join(out_dir, 'meta.json'), 'w', encoding='utf-8') as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
 
-    metrics = {'ic': ic, 'layers': layers, 'strategy': strategy, 'strategy_pct': strategy_pct}
+    metrics = {'ic': ic, 'layers': layers, 'regimes': regime_stats,
+               'strategy': strategy, 'strategy_pct': strategy_pct}
     with open(os.path.join(out_dir, 'metrics.json'), 'w', encoding='utf-8') as f:
         json.dump(metrics, f, ensure_ascii=False, indent=1)
 

@@ -52,7 +52,7 @@ def _cache_financial(stock_code, kind, loader):
     return data
 
 
-def fetch_financial_reports(stock_code, exchange, max_reports=40):
+def fetch_financial_reports(stock_code, exchange, max_reports=80):
     """
     获取股票历年财务报表核心指标（带本地缓存）
 
@@ -297,7 +297,7 @@ def auto_fill_factors(optional_factors, financial_metrics, model_type):
     if 'roe' not in updated or updated['roe'] is None:
         if 'avg_roe' in financial_metrics and financial_metrics['avg_roe'] > 0:
             updated['roe'] = financial_metrics['avg_roe']
-            print(f"  [auto] ROE = {financial_metrics['avg_roe']:.2%} (近{financial_metrics.get('annual_reports_count', '?')}年报均值)")
+            print(f"  [auto] ROE = {financial_metrics['avg_roe']:.2%} (近5年报均值)")
     
     if 'margin_stability' not in updated or updated['margin_stability'] is None:
         if 'gross_margin_stability' in financial_metrics:
