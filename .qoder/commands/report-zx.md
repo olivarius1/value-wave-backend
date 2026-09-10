@@ -13,8 +13,8 @@ description: 生成 watchlist 全量估值报告与汇总筛选
 4. 失败处理：末尾失败行 → `python scripts/batch_rebuild.py --retry --summary`，直到无失败
 5. 结果校验（用 Python 读 JSON，勿用文本工具逐行匹配输出）：
    - 46 只 JSON/HTML 齐全，meta.period 末尾 = 最新交易日
-   - meta.window_reason 分布合理（2026-09-06 iFinD 基准：regime_switch 15 只全部 window_start=2021 / loss_period_skip 3 / no_switch 28，insufficient_history 应为 0——iFinD 年报含上市前历史），regime_switch 名单见 .qoder/plans/factor-audit-ifind_20260906.md
-   - loss_period_skip 股票（文科股份/盐湖股份/元琛科技）HTML 有红色警示标注
+   - meta.window_reason 分布合理（2026-09-10 基准：regime_switch 14 只全部 window_start=2021 / loss_period_skip 2 / no_switch 26 / insufficient_history 4=次新年报不足10份的德明利/新柴/海油/元琛——德明利2016年报已从数据源消失，检测限定最近10个年报与PE分位窗口口径对齐），regime_switch 名单见 .qoder/plans/factor-audit-ifind_20260906.md 第六节
+   - loss_period_skip 股票（文科股份/盐湖股份）HTML 有红色警示标注
    - 云铝 dps=0.6997 恢复正常（[恢复] 行保留 dps/growth/subtitle/因子，不含 pe/pb）
    - 财报缓存抽查：老股年报数应 ≥10（iFinD），出现"近2年报均值"字样 = 缓存被截断污染，删 `artifacts/.cache/financial/*_reports.json` 重跑预热
 6. watchlist 时间列由 batch_rebuild 自动同步；有改动才提交（git add watchlist.txt）
