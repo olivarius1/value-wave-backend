@@ -48,7 +48,7 @@ def load_data(stocks, say=print):
         code, model = st['code'], st['model']
         exchange = 'sh' if code.startswith('6') else 'sz'
         try:
-            qfq = get_kline(code, exchange, years=BACKTEST_YEARS)['kline']
+            qfq = get_kline(code, exchange, years=BACKTEST_YEARS, fq='hfq')['kline']
             raw = get_kline_raw(code, exchange, years=BACKTEST_YEARS)
             if not qfq or not raw:
                 say(f"[{si}] {code} K线不足，跳过")

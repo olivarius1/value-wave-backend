@@ -108,7 +108,7 @@ def scan_stock(name, code, model):
 
     try:
         # 获取K线（自动增量）
-        kline_result = get_kline(code, exchange)
+        kline_result = get_kline(code, exchange, fq='hfq')
         kline_data = kline_result['kline']
         pe = kline_result['pe']
         pb = kline_result['pb']

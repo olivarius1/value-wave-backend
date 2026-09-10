@@ -74,13 +74,13 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 
 ## 可选因子
 
-未手动指定的可选因子会**自动从 iFinD 财报数据计算填充**（ROE 近10年报均值、毛利率稳定性、营收增速）。
+未手动指定的可选因子会**自动从 iFinD 财报数据计算填充**（ROE 近5年报均值、毛利率稳定性、营收增速）。
 因子体系经 2026-09 审计收敛为 ≤5 个/模型（剔除 IC≈0 的量能与 IC 为负的波动率，见 `.qoder/plans/factor-audit-ifind_20260906.md`）。
 
 | 因子 | 参数 | 示例 | 适用模型 |
 |------|------|------|----------|
-| ROE | `--roe:0.15` | 近10年报均值 | soe, bank |
-| 股息率 | `--div_yield:0.05` | 年度股息/股价 | soe, bank |
+| ROE | `--roe:0.15` | 近5年报均值 | soe, bank |
+| 股息率 | 优先 `--dps`（逐日动态） | 每股年分红/当日价 | soe, bank, cyclical |
 | 研发费用率 | `--rd_ratio:0.08` | 研发/营收 | tech |
 | 毛利率稳定性 | `--margin_stability:0.02` | 毛利率标准差 | staples |
 | 品牌溢价度 | `--brand_premium:2.0` | PB/行业均PB | discretionary |
@@ -132,7 +132,7 @@ python scripts/batch_rebuild.py --retry
 
 | 数据 | API | 说明 |
 |------|-----|------|
-| K线 | 腾讯财经 `web.ifzq.gtimg.cn`（故障自动切备用域名） | 前复权日K，自动分批获取10年 |
+| K线 | 腾讯财经 `web.ifzq.gtimg.cn`（故障自动切备用域名） | 后复权日K（收益/MA口径，恒正），自动分批获取；PE/PB 用不复权真实价 |
 | 财务报表 | 同花顺 iFinD `ths_*_pit_stock` PIT时点指标（主源） | 年报/半年报/季报核心指标，PIT口径 |
 | 财务报表（兜底） | 东方财富 `datacenter.eastmoney.com` | iFinD 失败时自动降级，带截断防护 |
 
@@ -241,7 +241,9 @@ stock-valuation-skill/
 │   ├── ths_fetcher.py       # iFinD 财报预热（PIT时点指标，批量拉取写缓存）
 │   ├── factor_analysis.py   # 因子级IC + 引擎版本对比（复用回测引擎）
 │   ├── backtest_engine.py   # Point-in-Time 回测评分（无未来函数）
-│   ├── run_backtest.py      # 回测入口：IC/分层/策略模拟 + 输出
+│   ├── run_backtest.py      # 回测入口：IC/分层/策略模拟 + 分段（牛熊）诊断 + 输出
+│   ├── backtest_grid.py     # 百分位策略参数网格（rolling-entry 任意起点检验）
+│   ├── market_regimes.py    # 上证指数回撤规则自动划分牛熊段
 │   ├── report_builder.py    # 回测 HTML 报告生成
 │   ├── scan_watchlist.py    # watchlist 扫描
 │   ├── batch_rebuild.py     # 批量重建（watchlist.txt 驱动，支持子集/过滤/dry-run/retry）

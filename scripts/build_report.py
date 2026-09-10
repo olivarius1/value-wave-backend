@@ -80,7 +80,7 @@ def _run_new_format():
 
     # 1. 获取K线数据（带缓存+增量）
     from kline_cache import get_kline, get_kline_raw
-    kline_result = get_kline(stock_code, exchange, no_cache=args.no_cache)
+    kline_result = get_kline(stock_code, exchange, no_cache=args.no_cache, fq='hfq')
     kline_data = kline_result['kline']
     # 不复权真实价K线（历史 PE/PB 必须用当日真实交易价；前复权价会随最新除权整体缩放导致失真）
     raw_kline = get_kline_raw(stock_code, exchange, no_cache=args.no_cache)

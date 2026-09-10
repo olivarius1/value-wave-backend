@@ -42,10 +42,22 @@ MODEL_NAMES = {
 }
 
 
+def _find_report_json(code, name):
+    """按代码定位报告 JSON（名称+代码 精确匹配优先；XD/ST 等名称前缀漂移时
+    回退按代码 glob 取最新，避免读到旧名残留文件）"""
+    import glob as _glob
+    base = os.path.join(_SKILL_DIR, 'artifacts', 'json_data')
+    exact = os.path.join(base, f'{name}{code}-valuation.json')
+    if os.path.exists(exact):
+        return exact
+    candidates = _glob.glob(os.path.join(base, f'*{code}-valuation.json'))
+    return max(candidates, key=os.path.getmtime) if candidates else None
+
+
 def analyze_stock(code, name, model):
     """从个股报告 JSON 读取结果，口径与个股报告绝对一致（同一份数据，无重复算分）"""
-    json_path = os.path.join(_SKILL_DIR, 'artifacts', 'json_data', f'{name}{code}-valuation.json')
-    if not os.path.exists(json_path):
+    json_path = _find_report_json(code, name)
+    if not json_path or not os.path.exists(json_path):
         return None
     try:
         with open(json_path, encoding='utf-8') as f:
@@ -68,7 +80,7 @@ def analyze_stock(code, name, model):
 
     return {
         'code': code, 'name': name, 'model': model,
-        'price': latest.get('close') or 0,
+        'price': meta.get('latest_raw_price') or latest.get('close') or 0,  # 展示用真实价（K线为后复权口径）
         'pe': latest.get('pe_ttm') or 0,
         'pb': latest.get('pb') or 0,
         'score': latest_score,

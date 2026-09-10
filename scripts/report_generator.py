@@ -224,11 +224,15 @@ _raw_close_map = {r[0]: float(r[2]) for r in _raw_kline_data} if _raw_kline_data
 
 # ===== 盈利换挡窗口（自动检测，替代旧的人工区间校准 MANUAL_RANGES）=====
 # 年报净利润序列 {归属年: 归母净利润亿元}：净利润总额不受送转稀释影响，直接用归属年。
+# 只取最近 10 个年报——与报告 PE 分位的 10 年窗口口径对齐（2026-09 财报起点扩至 2005 后，
+# 若用全历史做 5 年分段会把段划分前移 10 年，窗口判定整体漂移）。
 # 检测到向上换挡时 PE 分位只用换挡生效后的子序列（引擎内对齐年报披露时点）；
 # 向下回落/亏损段/历史不足只标注不切窗，PB 与其余因子维持全历史
+_annuals_sorted = sorted(
+    (_r for _r in _reports if _r.get('report_type') == 'annual' and _r.get('report_date')),
+    key=lambda r: r['report_date'])
 _annual_profit_series = {
-    int(_r['report_date'][:4]): _r['net_profit']
-    for _r in _reports if _r.get('report_type') == 'annual' and _r.get('report_date')
+    int(_r['report_date'][:4]): _r['net_profit'] for _r in _annuals_sorted[-10:]
 }
 _regime_start, _regime_reason = detect_regime_window(_annual_profit_series)
 if _regime_reason == 'regime_switch':
@@ -302,6 +306,8 @@ val_data = {
              'industry': INDUSTRY,
              'window_start': _regime_start, 'window_reason': _regime_reason,
              'regime_unstable': bool(_regime_info.get('unstable')),
+             # K线已切后复权（收益/MA 口径恒正），展示价格一律用真实价
+             'latest_raw_price': latest_price,
              'optional_factors': {k: v for k, v in factor_values.items() if v is not None}},
     'data': results
 }

@@ -24,7 +24,7 @@ sys.path.insert(0, _SCRIPT_DIR)
 
 from run_backtest import (
     load_watchlist, future_returns, spearman, weekly_sample,
-    FUTURE_HORIZONS, WEEKLY_SAMPLE, OUTPUT_ROOT,
+    FUTURE_HORIZONS, WEEKLY_SAMPLE, OUTPUT_ROOT, BACKTEST_YEARS,
 )
 from kline_cache import get_kline, get_kline_raw
 from financial_fetcher import fetch_pershare_data, fetch_financial_reports, fetch_stock_info
@@ -50,7 +50,7 @@ def load_data(stocks):
     for st in stocks:
         code, model = st['code'], st['model']
         exchange = 'sh' if code.startswith('6') else 'sz'
-        qfq = get_kline(code, exchange)['kline']
+        qfq = get_kline(code, exchange, years=BACKTEST_YEARS, fq='hfq')['kline']
         raw = get_kline_raw(code, exchange)
         if not qfq or not raw:
             continue

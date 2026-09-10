@@ -45,8 +45,10 @@ SCORE_BUY = 70                # 策略买入阈值（绝对分数）
 SCORE_SELL = 40               # 策略卖出阈值（绝对分数）
 NO_TRADE_COST = True          # 简化假设：无交易成本
 # 百分位策略参数（个股历史分数分布，PIT 重算）
-PCT_BUY = 0.80                # 分数处于自身历史 80th 以上买入
-PCT_SELL = 0.20               # 分数处于自身历史 20th 以下卖出
+# 2026-09 网格搜索（9 组合×18 年×任意起点 rolling-entry）：买入 95th/卖出 10th
+# 三准则（中位超额/胜率/回撤）平均名次 1.0，旧默认 80/20 为负超额——已按证据更新
+PCT_BUY = 0.95                # 分数处于自身历史 95th 以上（比 95% 的时候都便宜）买入
+PCT_SELL = 0.10               # 分数处于自身历史 10th 以下卖出
 PCT_MIN_SAMPLES = 50          # 阈值样本下限（与区间 MIN_RANGE_SAMPLES 一致）
 # 回测数据回溯年数：跨多轮牛熊（2008/2015/2018/2022-2024）。
 # 用独立缓存后缀 _kline20，与报告链路的 10 年口径隔离（报告的 PE/PB 分位窗口是 10 年设计）
@@ -248,7 +250,7 @@ def _signal_fn(mode, score_by, pct_thr):
     """返回信号函数 fn(code, date) -> 'buy' / 'sell' / None（None=保持前态）"""
     if mode == 'abs':
         def abs_fn(code, date):
-            s = score_by[code].get(date)
+            s = score_by.get(code, {}).get(date)
             if s is None:
                 return None
             if s >= SCORE_BUY:
@@ -259,7 +261,7 @@ def _signal_fn(mode, score_by, pct_thr):
         return abs_fn
 
     def pct_fn(code, date):
-        s = score_by[code].get(date)
+        s = score_by.get(code, {}).get(date)  # 扩张式宇宙/窗口子集下股票可能不在池内
         if s is None:
             return None
         thr = (pct_thr or {}).get(code, {}).get(date)
@@ -323,8 +325,8 @@ def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=Non
             if d not in closes or i == 0:
                 continue
             prev_close = closes.get(dates[i - 1])
-            if not prev_close or prev_close <= 0:
-                continue
+            if not prev_close or prev_close <= 0 or closes[d] <= 0:
+                continue  # 非正价格（脏数据防护）：不产生收益观测
             ret = closes[d] / prev_close - 1
             if ret != ret:  # NaN 防护
                 continue
@@ -363,7 +365,11 @@ def simulate_strategy(stock_daily, daily_close, fut_map, mode='abs', pct_thr=Non
     def _stats(nav_series):
         total = nav_series[-1] / nav_series[0] - 1
         n_days = len(nav_series)
-        annual = (nav_series[-1] / nav_series[0]) ** (252.0 / n_days) - 1 if n_days > 0 else 0
+        # 负净值（脏数据残余防护）：年化不再有实数意义，置 None 由下游容错
+        ratio = nav_series[-1] / nav_series[0]
+        annual = ratio ** (252.0 / n_days) - 1 if n_days > 0 and ratio > 0 else None
+        if annual is None:
+            annual = 0
         peak = nav_series[0]
         mdd = 0.0
         for v in nav_series:
@@ -426,7 +432,7 @@ def main():
         exchange = 'sh' if code.startswith('6') else 'sz'
         try:
             say(f"[{si + 1}/{len(stocks)}] {st['name']}({code}) model={model}")
-            qfq = get_kline(code, exchange, no_cache=args.refresh_data, years=BACKTEST_YEARS)['kline']
+            qfq = get_kline(code, exchange, no_cache=args.refresh_data, years=BACKTEST_YEARS, fq='hfq')['kline']
             raw = get_kline_raw(code, exchange, no_cache=args.refresh_data, years=BACKTEST_YEARS)
             pershare = fetch_pershare_data(code, exchange)
             reports = fetch_financial_reports(code, exchange)
