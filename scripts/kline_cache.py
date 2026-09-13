@@ -18,13 +18,24 @@ _SKILL_DIR = os.path.dirname(_SCRIPT_DIR)
 _PROJECT_ROOT = _SKILL_DIR  # 独立项目，根目录即skill目录
 CACHE_DIR = os.path.join(_PROJECT_ROOT, 'artifacts', '.cache')
 
+# SQLite 主存储（kline_store）：同目录导入，调用方均已把 _SCRIPT_DIR 加入 sys.path
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+import kline_store
+
 
 def _cache_path(stock_code, suffix='_kline'):
     return os.path.join(CACHE_DIR, f'{stock_code}{suffix}.json')
 
 
 def load_cache(stock_code, suffix='_kline'):
-    """加载本地K线缓存，返回 dict 或 None（suffix 指定缓存类型）"""
+    """加载本地K线缓存，返回 dict 或 None（suffix 指定缓存类型）。
+    存储层：SQLite(kline_store) 为主，JSON 文件只读兜底（存量迁移前的历史数据）"""
+    ktype = kline_store.SUFFIX_TO_KTYPE.get(suffix)
+    if ktype:
+        cache = kline_store.load(ktype, stock_code)
+        if cache is not None:
+            return cache
     path = _cache_path(stock_code, suffix)
     if not os.path.exists(path):
         return None
@@ -36,24 +47,89 @@ def load_cache(stock_code, suffix='_kline'):
 
 
 def save_cache(stock_code, exchange, kline_data, pe=0, pb=0, price=0, name='', suffix='_kline', qt_date='', volume=0):
-    """保存K线数据到本地缓存（suffix 指定缓存类型）"""
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    last_date = kline_data[-1][0] if kline_data else ''
-    cache = {
-        'code': stock_code,
-        'exchange': exchange,
-        'name': name,
-        'updated': datetime.date.today().strftime('%Y-%m-%d'),
-        'last_date': last_date,
-        'pe': pe,
-        'pb': pb,
-        'price': price,
-        'qt_date': qt_date,
-        'volume': volume,
-        'data': kline_data,
-    }
-    with open(_cache_path(stock_code, suffix), 'w', encoding='utf-8') as f:
-        json.dump(cache, f, ensure_ascii=False)
+    """保存K线数据到主存储（SQLite；JSON 不再写入）"""
+    ktype = kline_store.SUFFIX_TO_KTYPE.get(suffix)
+    if ktype is None:
+        # 未知后缀：保持旧行为写 JSON
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        last_date = kline_data[-1][0] if kline_data else ''
+        cache = {
+            'code': stock_code,
+            'exchange': exchange,
+            'name': name,
+            'updated': datetime.date.today().strftime('%Y-%m-%d'),
+            'last_date': last_date,
+            'pe': pe,
+            'pb': pb,
+            'price': price,
+            'qt_date': qt_date,
+            'volume': volume,
+            'data': kline_data,
+        }
+        with open(_cache_path(stock_code, suffix), 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False)
+        return
+    kline_store.save(ktype, stock_code, exchange, kline_data,
+                     pe, pb, price, name, qt_date=qt_date, volume=volume)
+
+
+def _slice_rows(rows, years, today=None):
+    """取最近 years 年的行切片（序列基准与请求窗口无关，切片等价于独立请求该窗口）"""
+    today = today or datetime.date.today()
+    boundary = (today - datetime.timedelta(days=years * 365)).isoformat()
+    return [r for r in rows if r[0] >= boundary]
+
+
+def _slice_from_full(full_res, stock_code, exchange, src_ktype, dst_suffix, years):
+    """由20年口径结果派生10年缓存：切片 + 物化到存储 + 返回切片结果。
+    20年序列为空（网络故障等）时回退到已存的10年缓存，避免把故障当空数据传播。"""
+    full_rows = full_res.get('kline') or []
+    today_str = datetime.date.today().strftime('%Y-%m-%d')
+    if full_rows:
+        sl = _slice_rows(full_rows, years)
+        if sl:
+            kline_store.save(kline_store.SUFFIX_TO_KTYPE[dst_suffix], stock_code, exchange, sl,
+                             full_res.get('pe', 0), full_res.get('pb', 0), full_res.get('price', 0),
+                             full_res.get('name', ''), qt_date=full_res.get('qt_date', ''),
+                             volume=full_res.get('volume', 0), updated=today_str)
+        return {**full_res, 'kline': sl}
+    fallback = kline_store.load(kline_store.SUFFIX_TO_KTYPE[dst_suffix], stock_code)
+    if fallback and fallback.get('data'):
+        return {**full_res, 'kline': fallback['data']}
+    return full_res
+
+
+def _total_return_series(stock_code, exchange):
+    """20年总收益口径（kline20r）：raw_kline20 + 分红送转事件链式重建，
+    除权日分红按当日收盘再投。序列落后于 raw 时本地续建（事件走30天本地缓存）。
+    任一环节不可用返回 None，调用方回退腾讯行情口径。"""
+    try:
+        import build_total_return as btr
+        from financial_fetcher import fetch_bonus_events
+        raw = kline_store.load('raw_kline20', stock_code)
+        if not raw or not raw.get('data') or len(raw['data']) < 30:
+            return None
+        cur = kline_store.load('kline20r', stock_code)
+        if cur and cur.get('data') and cur.get('last_date', '') >= raw['last_date']:
+            return {'kline': cur['data'], 'pe': cur.get('pe', 0), 'pb': cur.get('pb', 0),
+                    'price': cur.get('price', 0), 'name': cur.get('name', ''),
+                    'qt_date': cur.get('qt_date', ''), 'volume': cur.get('volume', 0)}
+        ten = kline_store.load('kline20h', stock_code)
+        events = fetch_bonus_events(stock_code, exchange)
+        built, _segs, _cash = btr.build_series(raw['data'], (ten or {}).get('data') or [], events)
+        if not built:
+            return None
+        kline_store.save('kline20r', stock_code, exchange, built,
+                         raw.get('pe', 0), raw.get('pb', 0), raw.get('price', 0), raw.get('name', ''),
+                         qt_date=raw.get('qt_date', ''), volume=raw.get('volume', 0))
+        cur = kline_store.load('kline20r', stock_code)
+        if cur and cur.get('data'):
+            return {'kline': cur['data'], 'pe': cur.get('pe', 0), 'pb': cur.get('pb', 0),
+                    'price': cur.get('price', 0), 'name': cur.get('name', ''),
+                    'qt_date': cur.get('qt_date', ''), 'volume': cur.get('volume', 0)}
+    except Exception as e:
+        print(f"  总收益口径续建失败({stock_code}): {e}, 回退行情口径", file=sys.stderr)
+    return None
 
 
 # 同一接口的备用域名，主域故障（如整体501）时依次切换
@@ -256,7 +332,19 @@ def get_kline(stock_code, exchange=None, no_cache=False, years=10, fq='qfq'):
     # 自动推断交易所
     if not exchange:
         exchange = 'sh' if stock_code.startswith('6') else 'sz'
+    # hfq 20年口径默认取 kline20r（raw + 分红送转事件重建的总收益序列，随 raw 落后自动续建）；
+    # VALVE_HFQ_KTYPE=kline20h 可回退到腾讯行情口径
+    if years > 10 and fq == 'hfq' and os.environ.get('VALVE_HFQ_KTYPE', 'kline20r') == 'kline20r':
+        _c = _total_return_series(stock_code, exchange)
+        if _c:
+            return _c
     suffix = ('_kline' if years <= 10 else f'_kline{years}') + ('' if fq == 'qfq' else 'h')
+
+    # 10年口径 = 20年序列的尾部切片（序列基准与请求窗口无关），10年缓存只读派生；
+    # fq='qfq' 的10年路径保持原样
+    if years <= 10 and fq == 'hfq':
+        full_res = get_kline(stock_code, exchange, no_cache=no_cache, years=20, fq='hfq')
+        return _slice_from_full(full_res, stock_code, exchange, 'kline20h', '_klineh', years)
 
     today_str = datetime.date.today().strftime('%Y-%m-%d')
 
@@ -353,6 +441,18 @@ def get_kline_raw(stock_code, exchange=None, no_cache=False, years=10):
     if not exchange:
         exchange = 'sh' if stock_code.startswith('6') else 'sz'
     suffix = '_raw_kline' if years <= 10 else f'_raw_kline{years}'
+
+    # 10年不复权 = 20年不复权序列的尾部切片（真实成交价与窗口无关）
+    if years <= 10:
+        full_rows = get_kline_raw(stock_code, exchange, no_cache=no_cache, years=20)
+        if full_rows:
+            sl = _slice_rows(full_rows, years)
+            if sl:
+                kline_store.save(kline_store.SUFFIX_TO_KTYPE['_raw_kline'], stock_code, exchange, sl,
+                                 updated=datetime.date.today().strftime('%Y-%m-%d'))
+            return sl
+        fallback = kline_store.load(kline_store.SUFFIX_TO_KTYPE['_raw_kline'], stock_code)
+        return fallback['data'] if fallback and fallback.get('data') else []
 
     today_str = datetime.date.today().strftime('%Y-%m-%d')
 
