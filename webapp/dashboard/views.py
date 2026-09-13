@@ -1,4 +1,5 @@
 """页面 + JSON API 视图"""
+import datetime
 import json
 
 from django.http import FileResponse, JsonResponse
@@ -7,7 +8,7 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import Job, StockGroup, StockGroupMember
-from .services import data_status, stock_ops
+from .services import data_status, report_registry, stock_ops
 from .services.jobs import SCRIPT_JOBS, executor
 
 
@@ -35,6 +36,7 @@ def report_page(request):
 
 @require_GET
 def api_status(request):
+    report_registry.backfill_registry()   # 存量报告一次性登记（进程内只跑一次）
     return JsonResponse(data_status.status_json())
 
 
@@ -63,34 +65,61 @@ def api_scores(request):
 
 # ---------- 报告浏览 API ----------
 
+AUTO_REBUILD_MIN_AGE = 10   # 分钟：刚重建过的报告不再被自动重建判据反复触发（防抖）
+
 @require_GET
 def api_report_status(request):
+    """报告状态 + 缓存过期判定。?auto=1 时过期自动入队重建（返回 job_id 供前端跟随）。"""
     code = (request.GET.get('code') or '').strip()
     if not (code.isdigit() and len(code) == 6):
         return JsonResponse({'error': '请输入6位股票代码'}, status=400)
-    model, model_source = stock_ops.resolve_model(code)
+    wl_model, model_source = stock_ops.resolve_model(code)
     name = stock_ops.stock_name(code)
-    known = bool(model) or stock_ops._kline_last_date(code) or \
-        stock_ops.find_meta_json(code) is not None
-    rep = stock_ops.find_report_file(code)
-    meta_doc = stock_ops.find_meta_json(code)
-    meta = (meta_doc or {}).get('meta') or {}
-    data_last = ''
-    if meta_doc and meta_doc.get('data'):
-        data_last = meta_doc['data'][-1].get('date', '')
+    info = report_registry.info(code)
+    build_model = wl_model or info['model']
+
+    auto_job_id = None
+    auto_note = ''
+    if info['stale'] and request.GET.get('auto') in ('1', 'true'):
+        cutoff = (tz.localtime(tz.now()) - datetime.timedelta(minutes=AUTO_REBUILD_MIN_AGE)) \
+            .strftime('%Y-%m-%d %H:%M')
+        just_built = bool(info['generated_at'] and info['generated_at'] >= cutoff)
+        if build_model and not just_built:
+            job, created = executor.enqueue(
+                'build_report',
+                label=f"生成报告 {code}({stock_ops.model_label(build_model)})",
+                params={'code': code, 'model': build_model})
+            auto_job_id = job.id
+            auto_note = '已自动触发重建' if created else '已有重建任务进行中'
+        elif just_built:
+            auto_note = f'{AUTO_REBUILD_MIN_AGE} 分钟内已重建过，暂不自动重试'
+        else:
+            auto_note = '无模型归属，无法自动重建（请在下方选择模型）'
+
     return JsonResponse({
-        'code': code, 'name': name, 'known': known,
-        'model': model, 'model_label': stock_ops.model_label(model),
-        'model_source': model_source,
-        'report': rep and {'mtime': rep['mtime'], 'size_kb': rep['size_kb'],
-                           'filename': rep['filename']},
+        'code': code, 'name': name,
+        'known': bool(build_model) or info['exists'] or bool(stock_ops._kline_last_date(code)),
+        'model': build_model, 'model_label': stock_ops.model_label(build_model),
+        'model_source': model_source or ('report' if info['model'] else ''),
+        'report': info['exists'] and {
+            'mtime': info['generated_at'], 'size_kb': info['size_kb'],
+            'filename': info['file_name']},
+        'cache': {
+            'generated_at': info['generated_at'],
+            'ttl_hours': info['ttl_hours'],
+            'stale': info['stale'],
+            'stale_reason': info['stale_reason'],
+            'data_last_date': info['data_last_date'],
+            'latest_trading_day': info['latest_trading_day'],
+        },
+        'auto_job_id': auto_job_id,
+        'auto_note': auto_note,
         'meta': {
-            'model_type': meta.get('model_type'),
-            'score': (meta_doc['data'][-1].get('score') if meta_doc and meta_doc.get('data') else None),
-            'price': meta.get('latest_raw_price'),
-            'weights': meta.get('weights'),
-            'window_reason': meta.get('window_reason'),
-            'data_last_date': data_last,
+            'model_type': info['model'],
+            'score': info['score'],
+            'price': info['latest_raw_price'],
+            'weights': info['weights'],
+            'data_last_date': info['data_last_date'],
         },
     })
 

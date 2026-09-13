@@ -78,3 +78,22 @@ class StockGroupMember(models.Model):
 
     class Meta:
         unique_together = ('group', 'code')
+
+
+class ReportArtifact(models.Model):
+    """报告产物登记（生成时间入库；HTML/JSON 文件本身在 artifacts/reports|json_data）。
+
+    generated_at 初值取自产物 mtime（文件落盘时间即构建完成时间），首次查询时登记；
+    重建后 mtime 变化会自动更新记录。报告页据此判定缓存是否过期。
+    """
+    code = models.CharField(max_length=10, primary_key=True)
+    name = models.CharField(max_length=40, blank=True, default='')
+    model = models.CharField(max_length=20, blank=True, default='')
+    file_name = models.CharField(max_length=140, blank=True, default='')
+    size_kb = models.IntegerField(default=0)
+    data_last_date = models.CharField(max_length=10, blank=True, default='')
+    generated_at = models.DateTimeField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['code']

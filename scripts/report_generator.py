@@ -465,14 +465,54 @@ else:
     _digest_series_fs_js = ''
     _digest_chart_note = ''
 
-# 关键日期
-key_dates = []
+# ===== 关键时点（分位驱动的事件点，替代原硬编码季度采样）=====
+# 选点：历史分数最低/最高（大底/大顶）+ 最近若干次 p95 上穿（买入信号）/ p10 下穿（卖出信号）
+#      + 最近 4 个交易日。每行附"该日分数在全历史中的分位"，与面板/策略口径一致。
 import datetime
-base = datetime.date(2024, 10, 8)
-for i in range(8):
-    d = base + datetime.timedelta(days=i * 90)
-    key_dates.append(d.strftime('%Y-%m-%d'))
-key_dates_str = ', '.join(f"'{d}'" for d in key_dates)
+_sorted_scores = sorted(scores)
+_n_scores = len(_sorted_scores)
+
+
+def _score_quantile(p):
+    return _sorted_scores[min(_n_scores - 1, max(0, int(_n_scores * p)))]
+
+
+_buy_line, _sell_line = _score_quantile(0.95), _score_quantile(0.10)
+_score_by_date = {r['date']: r['score'] for r in results}
+
+
+def _score_pct_of(v):
+    return round(sum(1 for x in _sorted_scores if x < v) / _n_scores * 100, 1)
+
+
+_key_events = []
+
+
+def _add_key(date, tag):
+    for d, _t in _key_events:
+        if d == date:
+            return
+    _key_events.append((date, tag))
+
+
+_low_i = min(range(_n_scores), key=lambda i: results[i]['score'])
+_high_i = max(range(_n_scores), key=lambda i: results[i]['score'])
+_add_key(results[_low_i]['date'], '历史最低分')
+_add_key(results[_high_i]['date'], '历史最高分')
+_buy_days = [results[i]['date'] for i in range(1, _n_scores)
+             if results[i]['score'] >= _buy_line and results[i - 1]['score'] < _buy_line]
+_sell_days = [results[i]['date'] for i in range(1, _n_scores)
+              if results[i]['score'] <= _sell_line and results[i - 1]['score'] > _sell_line]
+for _d in _buy_days[-2:]:
+    _add_key(_d, f'买入信号(上穿p95={_buy_line})')
+for _d in _sell_days[-2:]:
+    _add_key(_d, f'卖出信号(下穿p10={_sell_line})')
+for _r in results[-4:]:
+    _add_key(_r['date'], '最近交易日')
+key_dates_js = json.dumps(
+    [{'date': d, 'tag': t, 'pct': _score_pct_of(_score_by_date.get(d, 0))}
+     for d, t in sorted(_key_events)],
+    ensure_ascii=False)
 _gen_date = datetime.date.today().strftime('%Y年%m月')
 
 # 生成动态因子参数表格HTML行
@@ -690,6 +730,8 @@ html {{ scroll-behavior: smooth; }}
       <tr{_band_styles['极度高估']}><td>0-19</td><td>极度高估</td><td>严重高估，存在较大回调风险</td></tr>
     </tbody>
   </table></div>
+  <p class="muted">口径说明：此表为<b>绝对分数刻度</b>的语义描述，不是交易信号——回测显示绝对分数门槛（如 ≥70）会系统性错过周期底，
+     且分数跨股票不可比。买卖参考请以图上的<b>自身历史 p95 / p10</b> 分位线为准（与回测策略同一口径）。</p>
 </section>
 <section id="s3">
   <h2 class="section-num">Section 03</h2>
@@ -706,14 +748,16 @@ html {{ scroll-behavior: smooth; }}
       <button class="range-btn" data-range="all">全部</button>
     </span>
     <div id="chart-backtest" style="width:100%;height:550px;"></div>
-    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色虚线为70分低估分界线，红色虚线为40分高估分界线，深绿点线为80分极度低估分界线，深红点线为20分极度高估分界线（浅绿/浅红细线为历史80th/20th百分位）。{_digest_chart_note}分数越高代表越被低估。</p>
+    <p>图表说明：蓝色折线为综合分数（0-100），浅灰色面积图为收盘价走势（元），金色折线为盈利收益率（1/PE×100，%，独立缩放）。绿色粗虚线为**自身历史 p95（买入参考）**，红色粗虚线为**自身历史 p10（卖出参考）**，细线为次级分位参考（自身 p80 / p30 / p20）——与回测策略同一口径（网格搜索选定的 90分位/20分位已被 95/10 取代；绝对分数阈值不能跨股票比较，仅作语义参考）。{_digest_chart_note}分数越高代表越被低估。</p>
   </div>
 </section>
 <section id="s4">
   <h2 class="section-num">Section 04</h2>
   <h2>关键时点估值分析</h2>
+  <p class="muted">选点口径：历史分数最低/最高（大底/大顶）＋最近的 p95 上穿（买入信号）与 p10 下穿（卖出信号）＋最近交易日；
+     分位列为该日分数在全历史中的位置（与分数面板、回测策略同一口径）。</p>
   <div class="table-wrap"><table>
-    <thead><tr><th>日期</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>状态</th></tr></thead>
+    <thead><tr><th>日期</th><th>类型</th><th>收盘价</th><th>PE(TTM)</th><th>PB</th><th>市值(亿)</th><th>分数</th><th>历史分位</th><th>状态</th></tr></thead>
     <tbody id="keyDateTable"></tbody>
   </table></div>
   <h3>最新估值状态</h3>
@@ -786,8 +830,11 @@ html {{ scroll-behavior: smooth; }}
   var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
-  var p20 = sortedScores[Math.floor(sortedScores.length * 0.2)];
-  var p80 = sortedScores[Math.floor(sortedScores.length * 0.8)];
+  var p10 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.10))];
+  var p20 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.20))];
+  var p30 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.30))];
+  var p80 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.80))];
+  var p95 = sortedScores[Math.min(sortedScores.length - 1, Math.floor(sortedScores.length * 0.95))];
   data.forEach(function(d) {{
     var c = 0;
     for (var i = 0; i < sortedScores.length; i++) {{ if (sortedScores[i] <= d.score) c++; }}
@@ -849,12 +896,11 @@ html {{ scroll-behavior: smooth; }}
         markLine: {{
           silent: true,
           data: [
-            {{ yAxis: 80, label: {{ formatter: '极度低估区间', position: 'insideEndTop', color: '#14532d', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#14532d', type: 'dotted', width: 2 }} }},
-            {{ yAxis: 70, label: {{ formatter: '低估区间', position: 'insideEndTop', color: '#2d7d46', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#2d7d46', type: 'dashed', width: 1.5 }} }},
-            {{ yAxis: 40, label: {{ formatter: '高估区间', position: 'insideEndBottom', color: '#b22222', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#b22222', type: 'dashed', width: 1.5 }} }},
-            {{ yAxis: 20, label: {{ formatter: '极度高估区间', position: 'insideEndBottom', color: '#7f1d1d', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#7f1d1d', type: 'dotted', width: 2 }} }},
-            {{ yAxis: p80, label: {{ formatter: '80th百分位', position: 'insideEndTop', color: '#4ade80aa', fontSize: 10 }}, lineStyle: {{ color: '#4ade80aa', type: 'dashed', width: 1 }} }},
-            {{ yAxis: p20, label: {{ formatter: '20th百分位', position: 'insideEndBottom', color: '#f87171aa', fontSize: 10 }}, lineStyle: {{ color: '#f87171aa', type: 'dashed', width: 1 }} }}
+            {{ yAxis: p95, label: {{ formatter: '买入参考 自身历史p95', position: 'insideEndTop', color: '#14532d', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#2d7d46', type: 'dashed', width: 2 }} }},
+            {{ yAxis: p10, label: {{ formatter: '卖出参考 自身历史p10', position: 'insideEndBottom', color: '#b22222', fontSize: 12, fontWeight: 'bold' }}, lineStyle: {{ color: '#b22222', type: 'dashed', width: 2 }} }},
+            {{ yAxis: p80, label: {{ formatter: '自身p80', position: 'insideEndTop', color: '#4ade80', fontSize: 10 }}, lineStyle: {{ color: '#4ade8099', type: 'dashed', width: 1 }} }},
+            {{ yAxis: p30, label: {{ formatter: '自身p30', position: 'insideEndBottom', color: '#fb923c', fontSize: 10 }}, lineStyle: {{ color: '#fb923c99', type: 'dashed', width: 1 }} }},
+            {{ yAxis: p20, label: {{ formatter: '自身p20', position: 'insideEndBottom', color: '#f87171', fontSize: 10 }}, lineStyle: {{ color: '#f8717199', type: 'dashed', width: 1 }} }}
           ]
         }}, z: 5
       }},
@@ -881,19 +927,18 @@ html {{ scroll-behavior: smooth; }}
     }});
   }});
 
-  // 填充关键日期表格
-  var keyDates = [{key_dates_str}];
+  // 填充关键时点表格（后端已按分位驱动选点，按日期升序）
+  var keyEvents = {key_dates_js};
   var tbody = document.getElementById('keyDateTable');
   if (tbody) {{
-    var added = 0;
-    for (var i = data.length - 1; i >= 0 && added < 8; i--) {{
-      if (keyDates.indexOf(data[i].date) !== -1 || added < 4) {{
-        var r = data[i];
-        var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 40 ? '无交易价值' : r.score >= 20 ? '高估' : '极度高估';
-        tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + st + '</td></tr>';
-        added++;
-      }}
-    }}
+    var byDate = {{}};
+    data.forEach(function(r) {{ byDate[r.date] = r; }});
+    keyEvents.forEach(function(ev) {{
+      var r = byDate[ev.date];
+      if (!r) return;
+      var st = r.score >= 80 ? '极度低估' : r.score >= 70 ? '低估' : r.score >= 40 ? '无交易价值' : r.score >= 20 ? '高估' : '极度高估';
+      tbody.innerHTML += '<tr><td>' + r.date + '</td><td>' + ev.tag + '</td><td>' + r.close + '</td><td>' + r.pe_ttm + '</td><td>' + r.pb + '</td><td>' + r.market_cap.toFixed(0) + '</td><td>' + r.score + '</td><td>' + ev.pct + '%</td><td>' + st + '</td></tr>';
+    }});
   }}
 }})();
 
@@ -915,8 +960,11 @@ function openFullscreenChart() {{
   var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
-  var p20 = sortedScores[Math.floor(sortedScores.length * 0.2)];
-  var p80 = sortedScores[Math.floor(sortedScores.length * 0.8)];
+  var p10 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.10))];
+  var p20 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.20))];
+  var p30 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.30))];
+  var p80 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.80))];
+  var p95 = sortedScores[Math.min(sortedScores.length - 1, Math.floor(sortedScores.length * 0.95))];
   data.forEach(function(d) {{
     var c = 0;
     for (var i = 0; i < sortedScores.length; i++) {{ if (sortedScores[i] <= d.score) c++; }}
@@ -989,12 +1037,11 @@ function openFullscreenChart() {{
         markLine: {{
           silent: true,
           data: [
-            {{ yAxis: 80, label: {{ formatter: '极度低估区间', position: 'insideEndTop', color: '#14532d', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#14532d', type: 'dotted', width: 2 }} }},
-            {{ yAxis: 70, label: {{ formatter: '低估区间', position: 'insideEndTop', color: '#4ade80', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#4ade80', type: 'dashed', width: 1.5 }} }},
-            {{ yAxis: 40, label: {{ formatter: '高估区间', position: 'insideEndBottom', color: '#f87171', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#f87171', type: 'dashed', width: 1.5 }} }},
-            {{ yAxis: 20, label: {{ formatter: '极度高估区间', position: 'insideEndBottom', color: '#7f1d1d', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#7f1d1d', type: 'dotted', width: 2 }} }},
-            {{ yAxis: p80, label: {{ formatter: '80th百分位', position: 'insideEndTop', color: '#4ade80aa', fontSize: 10 }}, lineStyle: {{ color: '#4ade80aa', type: 'dashed', width: 1 }} }},
-            {{ yAxis: p20, label: {{ formatter: '20th百分位', position: 'insideEndBottom', color: '#f87171aa', fontSize: 10 }}, lineStyle: {{ color: '#f87171aa', type: 'dashed', width: 1 }} }}
+            {{ yAxis: p95, label: {{ formatter: '买入参考 自身历史p95', position: 'insideEndTop', color: '#14532d', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#2d7d46', type: 'dashed', width: 2 }} }},
+            {{ yAxis: p10, label: {{ formatter: '卖出参考 自身历史p10', position: 'insideEndBottom', color: '#b22222', fontSize: 11, fontWeight: 'bold' }}, lineStyle: {{ color: '#b22222', type: 'dashed', width: 2 }} }},
+            {{ yAxis: p80, label: {{ formatter: '自身p80', position: 'insideEndTop', color: '#4ade80', fontSize: 10 }}, lineStyle: {{ color: '#4ade8099', type: 'dashed', width: 1 }} }},
+            {{ yAxis: p30, label: {{ formatter: '自身p30', position: 'insideEndBottom', color: '#fb923c', fontSize: 10 }}, lineStyle: {{ color: '#fb923c99', type: 'dashed', width: 1 }} }},
+            {{ yAxis: p20, label: {{ formatter: '自身p20', position: 'insideEndBottom', color: '#f87171', fontSize: 10 }}, lineStyle: {{ color: '#f8717199', type: 'dashed', width: 1 }} }}
           ]
         }}, z: 5
       }},

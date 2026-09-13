@@ -30,16 +30,18 @@ const params = new URLSearchParams(location.search);
 let buildJobId = null;
 
 async function loadReport(code) {
-  const r = await api.get('/api/report/status/?code=' + encodeURIComponent(code));
+  const r = await api.get('/api/report/status/?auto=1&code=' + encodeURIComponent(code));
   if (r.error) { $('#meta').textContent = r.error; return; }
   const m = r.meta || {};
+  const c = r.cache || {};
   $('#meta').innerHTML =
     `<b>${api.esc(r.name)}</b>(${api.esc(r.code)})` +
     ` · 模型 ${api.esc(r.model_label || r.model || '未归属')}${r.model_source === 'ai' ? '(AI)' : ''}` +
     (m.score != null ? ` · 当前分 <b>${m.score}</b>` : '') +
     (m.price ? ` · 现价 ${m.price}` : '') +
     (m.weights ? ` · ${api.esc(m.weights)}` : '') +
-    (m.data_last_date ? ` · 数据至 ${m.data_last_date}` : '');
+    (m.data_last_date ? ` · 数据至 ${m.data_last_date}` : '') +
+    (c.generated_at ? ` · 生成于 ${c.generated_at}（缓存 ${c.ttl_hours}h）` : '');
   if (r.report) {
     $('#empty').style.display = 'none';
     $('#frame').style.display = '';
@@ -50,6 +52,13 @@ async function loadReport(code) {
     $('#empty').style.display = '';
   }
   if (r.model) $('#model').value = r.model;
+  // 缓存过期 → 后端已自动入队重建，前端跟随该任务
+  if (r.auto_job_id) {
+    buildJobId = r.auto_job_id;
+    setBuildState(`<span class="spin">⏳</span> 缓存过期（${api.esc(c.stale_reason || '')}），${api.esc(r.auto_note || '重建中')} #${r.auto_job_id}`, 'run');
+  } else if (c.stale) {
+    setBuildState(`⚠ 缓存过期（${api.esc(c.stale_reason)}）${r.auto_note ? '，' + api.esc(r.auto_note) : ''}`, 'err');
+  }
 }
 
 $('#btn-view').addEventListener('click', () => {
@@ -65,10 +74,26 @@ $('#btn-build').addEventListener('click', async () => {
   if (!/^\d{6}$/.test(code)) { $('#meta').textContent = '请输入6位股票代码'; return; }
   const model = $('#model').value || 'auto';   // 空 = 自动检测（watchlist人工 > AI分类）
   const r = await api.post('/api/jobs/create/', {kind: 'build_report', code, model});
-  if (r.status !== 200) { $('#build-state').textContent = r.data.error || '入队失败'; return; }
+  if (r.status !== 200) {
+    setBuildState(`❌ ${api.esc(r.data.error || '入队失败')}`, 'err');
+    return;
+  }
   buildJobId = r.data.job_id;
-  $('#build-state').innerHTML = `<span class="spin">⏳</span> ${r.data.created ? '已入队' : '任务进行中'}: #${buildJobId}`;
+  const jobs = await api.get('/api/jobs/');
+  const running = (jobs.jobs || []).find(x => x.status === 'running' && x.id !== buildJobId);
+  setBuildState(
+    `<span class="spin">⏳</span> ${r.data.created ? '已入队' : '任务已在队列中'} #${buildJobId}` +
+    (running ? `（等「${api.esc(running.label)}」完成）` : ''), 'run');
 });
+
+function setBuildState(html, cls) {
+  const el = $('#build-state');
+  el.innerHTML = html;
+  el.style.cssText = 'padding:2px 10px;border-radius:10px;font-weight:600;' +
+    (cls === 'run' ? 'background:#fff8c5;color:#9a6700;' :
+     cls === 'ok' ? 'background:#dafbe1;color:#1a7f37;' :
+     cls === 'err' ? 'background:#ffebe9;color:#cf222e;' : '');
+}
 
 setInterval(async () => {
   const data = await api.get('/api/jobs/');
@@ -76,14 +101,20 @@ setInterval(async () => {
   if (!buildJobId) return;
   const j = data.jobs.find(x => x.id === buildJobId);
   if (!j) return;
-  if (j.status === 'running') {
-    $('#build-state').innerHTML = `<span class="spin">⏳</span> 生成中 ${j.total ? j.progress + '/' + j.total : ''} ${api.esc(j.message || '')}`;
+  const running = data.jobs.find(x => x.status === 'running');
+  if (j.status === 'pending') {
+    // 队列里有任务在跑（单 worker 串行），明确告诉用户"在排队"而不是看起来没反应
+    setBuildState(`⏳ 排队中 #${j.id}` + (running
+      ? `（等「${api.esc(running.label)}」${running.total ? ' ' + running.progress + '/' + running.total : ''} 完成）`
+      : '（等待调度）'), 'run');
+  } else if (j.status === 'running') {
+    setBuildState(`<span class="spin">⏳</span> 生成中 ${j.total ? j.progress + '/' + j.total : ''} ${api.esc(j.message || '')}`, 'run');
   } else if (j.status === 'done') {
-    $('#build-state').textContent = '✅ 报告已生成';
+    setBuildState(`✅ 报告已重新生成 #${j.id}（${j.finished_at || ''}）`, 'ok');
     buildJobId = null;
     loadReport($('#code').value.trim());
   } else if (j.status === 'failed' || j.status === 'canceled') {
-    $('#build-state').textContent = `❌ ${j.status === 'canceled' ? '已取消' : '失败'}: ${j.message}`;
+    setBuildState(`❌ ${j.status === 'canceled' ? '已取消' : '失败'}: ${api.esc(j.message)}`, 'err');
     buildJobId = null;
   }
 }, 1500);

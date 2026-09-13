@@ -72,3 +72,6 @@ CSRF_COOKIE_HTTPONLY = False
 # 数据脚本产品物目录（报告 HTML / 估值 JSON），views 直接读
 REPORTS_DIR = BACKEND_DIR / 'artifacts' / 'reports'
 JSON_DATA_DIR = BACKEND_DIR / 'artifacts' / 'json_data'
+
+# 报告缓存有效期（小时）：报告页打开时若产物过期则自动后台重建（另有"数据落后"硬判据）
+REPORT_TTL_HOURS = int(os.environ.get('VALVE_REPORT_TTL_HOURS', '8'))
