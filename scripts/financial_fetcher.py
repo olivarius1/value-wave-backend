@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 """
-财务报表数据获取器
-从东方财富数据中心API获取A股历年年报、半年报、季报的核心财务指标
-用于估值评分模型的参数自动校准
+财务报表数据获取器（数据源门面）
+调用方不感知数据源。数据源链由 env FIN_SOURCES 控制（默认 'akshare,east'）:
+  akshare  akshare 封装的东财接口（业绩报表批量入库走 fetch_all_financials.py；分红送配逐股）
+  east     东方财富数据中心API直连（公开接口，无额度限制）
+  ths      同花顺 iFinD SDK——额度已耗尽，默认禁用；恢复后 FIN_SOURCES=east,ths 重新启用
+
+存储: fin_store.py (SQLite) 统一落库，30天TTL内直接读库不发起网络请求。
+纯计算逻辑（评分指标/估值区间/EPS-BPS重述）保留在本模块，与数据源和存储解耦。
 """
 import json
-import re
-import urllib.request
-import urllib.parse
-import sys
 import os
+import re
+import sys
 import time as _time
+import urllib.parse
+import urllib.request
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+import fin_store
 
-# ===== 财务数据本地缓存（回测可复现性基础：数据冻结，30天内复用）=====
-_FIN_CACHE_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), '..',
-    'artifacts', '.cache', 'financial')
-_FIN_CACHE_MAX_AGE = 30 * 86400  # 30天
+# 旧JSON缓存目录（已由 fin_store.migrate_json 一次性迁入SQLite，保留作备份）
+_FIN_CACHE_DIR = fin_store.LEGACY_FIN_DIR
+
+# 数据源链（各能力按需取交集，如 reports 只认 east/ths，bonus 只认 akshare/east）
+FIN_SOURCES = tuple(s.strip() for s in os.environ.get(
+    'FIN_SOURCES', 'akshare,east').split(',') if s.strip())
 
 
 def _fetch_api(url, timeout=15):
@@ -36,43 +46,55 @@ def _fetch_api(url, timeout=15):
 
 
 def _cache_financial(stock_code, kind, loader):
-    """通用财务缓存：缓存存在且30天内 → 直接读；否则调用loader()抓取并保存"""
-    os.makedirs(_FIN_CACHE_DIR, exist_ok=True)
-    path = os.path.join(_FIN_CACHE_DIR, f"{stock_code}_{kind}.json")
-    if os.path.exists(path) and (_time.time() - os.path.getmtime(path)) < _FIN_CACHE_MAX_AGE:
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    """杂项 kind 的JSON blob缓存（研发费用率等），30天TTL。
+    报表/每股/分红/行业等专表数据走各自 fetch_*，不走这里。兼容 model_classifier 既有调用。"""
+    ek = f'extra:{kind}'
+    if fin_store.is_fresh(stock_code, ek):
+        data = fin_store.get_extra(stock_code, kind)
+        if data is not None:
+            return data
     data = loader()
     if data:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
+        fin_store.set_extra(stock_code, kind, data, source='loader')
     return data
 
 
-def fetch_financial_reports(stock_code, exchange, max_reports=80):
+def fetch_financial_reports(stock_code, exchange, max_reports=0):
     """
-    获取股票历年财务报表核心指标（带本地缓存）
+    获取股票历年财务报表核心指标（fin_store 30天TTL + 数据源链）
 
-    数据源: iFinD(主源，见 ths_fetcher.py) → 失败降级东财(兜底，截断防护保留)。
-    两者产出同 schema 缓存，30天内直接复用不发起请求。
+    数据源: akshare 全市场批量预热（fetch_all_financials.py，主力）→ 东财单股兜底。
+    iFinD 主源因额度耗尽默认禁用（FIN_SOURCES=east,ths 可恢复），恢复后仍作东财之前的优先源。
 
     Args:
         stock_code: 股票代码, e.g. '600887'
         exchange: 交易所, 'sh' or 'sz'
-        max_reports: 最多获取的报告期数量
+        max_reports: 最多返回的报告期数量；0（默认）不截断——回测需要全历史
+            （2005年起86期），只有显式传值的调用方（如 scan 的近10期）才截断
 
     Returns:
-        list of dict, 按报告期从新到旧排列
+        list of dict, 按报告期从新到旧排列；全源失败时返回库内旧数据（宁旧勿缺）
     """
-    def _load():
-        data = _load_ths_reports(stock_code)
-        if data is None:
-            data = _load_eastmoney_reports(stock_code, exchange, max_reports)
-        return data
-    return _cache_financial(stock_code, 'reports', _load)
+    def _cap(data):
+        return data[:max_reports] if max_reports else data
+
+    if fin_store.is_fresh(stock_code, 'reports'):
+        data = fin_store.load_reports(stock_code)
+        if data:
+            return _cap(data)
+    for src in [s for s in ('ths', 'east') if s in FIN_SOURCES]:
+        data = _REPORT_FETCHERS[src](stock_code, exchange, max_reports or 80)
+        if data:
+            fin_store.replace_reports(stock_code, data, source=src)
+            return _cap(data)
+    return _cap(fin_store.load_reports(stock_code))
+
+
+_REPORT_FETCHERS = {
+    # lambda 惰性引用：字典在模块导入时求值，早于各 _load_* 函数定义
+    'ths': lambda code, ex, mr: _load_ths_reports(code),
+    'east': lambda code, ex, mr: _load_eastmoney_reports(code, ex, mr),
+}
 
 
 def _load_eastmoney_reports(stock_code, exchange, max_reports=40):
@@ -92,7 +114,7 @@ def _load_eastmoney_reports(stock_code, exchange, max_reports=40):
 
 
 def _load_ths_reports(stock_code):
-    """iFinD 主源：单股拉取并写缓存，返回报告列表；SDK 缺失或失败返回 None（降级东财）"""
+    """iFinD 单股拉取并写库（额度恢复后经 FIN_SOURCES=east,ths 启用）。失败返回 None（降级东财）"""
     try:
         import ths_fetcher
     except ImportError:
@@ -101,7 +123,10 @@ def _load_ths_reports(stock_code):
         ths_fetcher.fetch_watchlist_reports([stock_code])
         path = os.path.join(_FIN_CACHE_DIR, f'{stock_code}_reports.json')
         with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        if data:
+            fin_store.replace_reports(stock_code, data, source='ths')
+        return data or None
     except Exception as e:
         print(f"  [financial_fetcher] iFinD获取 {stock_code} 财报失败: {e}，降级东财", file=sys.stderr)
         return None
@@ -369,63 +394,27 @@ def fetch_kline_batches(stock_code, exchange, batches, output_dir):
 
 def fetch_stock_info(stock_code, exchange):
     """
-    获取股票基本信息：总股本、行业、最新营收/净利润/毛利率（带本地缓存）
+    获取股票基本信息：总股本（联网）+ 最新年报营收/净利润/毛利率/近5年净利CAGR（由库内reports派生）
 
     Returns:
         dict: {
             'total_shares': 总股本(亿股),
-            'industry': 行业描述,
             'revenue': 最新年报营收(亿),
             'net_profit': 最新年报净利润(亿),
             'gross_margin': 毛利率(小数),
             'eps_growth': 近5年净利润CAGR,
         }
     """
-    return _cache_financial(
-        stock_code, 'info',
-        lambda: _fetch_stock_info_uncached(stock_code, exchange))
-
-
-def _fetch_stock_info_uncached(stock_code, exchange):
-    """
-    获取股票基本信息：总股本、行业、最新营收/净利润/毛利率
-
-    Returns:
-        dict: {
-            'total_shares': 总股本(亿股),
-            'industry': 行业描述,
-            'revenue': 最新年报营收(亿),
-            'net_profit': 最新年报净利润(亿),
-            'gross_margin': 毛利率(小数),
-            'eps_growth': 近5年净利润CAGR,
-        }
-    """
-    secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
     info = {}
-    
-    # 从东方财富获取总股本
-    url = (
-        f"https://datacenter.eastmoney.com/securities/api/data/v1/get"
-        f"?reportName=RPT_F10_FINANCE_MAINFINADATA"
-        f"&columns=SECUCODE,TOTAL_SHARE"
-        f"&filter=(SECUCODE=%22{secucode}%22)"
-        f"&pageSize=1"
-        f"&sortColumns=REPORT_DATE"
-        f"&sortTypes=-1"
-        f"&source=HSF10"
-        f"&client=PC"
-    )
-    data = _fetch_api(url)
-    if data and data.get('success') and data.get('result'):
-        items = data['result'].get('data', [])
-        if items:
-            item = items[0]
-            # 总股本（股 → 亿股）
-            total_shares_raw = item.get('TOTAL_SHARE')
-            if total_shares_raw:
-                info['total_shares'] = round(float(total_shares_raw) / 1e8, 2)
-    
-    # 从已有财报获取最新年报数据
+    if fin_store.is_fresh(stock_code, 'info'):
+        info.update(fin_store.get_info(stock_code))
+    else:
+        total_shares = _fetch_total_shares(stock_code, exchange)
+        if total_shares:
+            fin_store.set_info(stock_code, total_shares, source='east')
+            info['total_shares'] = total_shares
+
+    # 派生字段从 reports 现算，避免 info 缓存与 reports 口径漂移（旧实现存两份）
     reports = fetch_financial_reports(stock_code, exchange, max_reports=10)
     if reports:
         annuals = [r for r in reports if r['report_type'] == 'annual']
@@ -443,21 +432,60 @@ def _fetch_stock_info_uncached(stock_code, exchange):
             if latest_profit > 0 and oldest_profit > 0 and years > 0:
                 cagr = (latest_profit / oldest_profit) ** (1.0 / years) - 1
                 info['eps_growth'] = round(cagr, 4)
-    
+
     return info
 
 
-def fetch_industry(stock_code, exchange):
-    """获取东财行业分类名（F10 公司概况 EM2016 字段末段，如 工业金属/黄金），带本地缓存
+def _fetch_total_shares(stock_code, exchange):
+    """总股本（股 → 亿股），来源: 东财 RPT_F10_FINANCE_MAINFINADATA TOTAL_SHARE（公开接口）"""
+    secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
+    url = (
+        f"https://datacenter.eastmoney.com/securities/api/data/v1/get"
+        f"?reportName=RPT_F10_FINANCE_MAINFINADATA"
+        f"&columns=SECUCODE,TOTAL_SHARE"
+        f"&filter=(SECUCODE=%22{secucode}%22)"
+        f"&pageSize=1"
+        f"&sortColumns=REPORT_DATE"
+        f"&sortTypes=-1"
+        f"&source=HSF10"
+        f"&client=PC"
+    )
+    data = _fetch_api(url)
+    if data and data.get('success') and data.get('result'):
+        items = data['result'].get('data', [])
+        if items:
+            total_shares_raw = items[0].get('TOTAL_SHARE')
+            if total_shares_raw:
+                return round(float(total_shares_raw) / 1e8, 2)
+    return 0
 
-    独立缓存键：info 缓存旧记录无 industry 字段，30 天过期前无法自愈
+
+def fetch_industry_chain(stock_code, exchange):
+    """获取东财 EM2016 完整三级行业链（如 '电子设备-半导体-集成电路'），fin_store 30天TTL
+
+    行业链唯一入库点：model_classifier 关键词打分与报告行业名共用一份数据。
     """
-    return _cache_financial(
-        stock_code, 'industry_v1',
-        lambda: _fetch_industry_uncached(stock_code, exchange))
+    if fin_store.is_fresh(stock_code, 'industry'):
+        chain = fin_store.get_industry(stock_code)
+        if chain:
+            return chain
+    chain = _fetch_industry_uncached(stock_code, exchange)
+    if chain:
+        fin_store.set_industry(stock_code, chain, source='east')
+        return chain
+    return fin_store.get_industry(stock_code)
+
+
+def fetch_industry(stock_code, exchange):
+    """行业名（EM2016 链末段，如 工业金属/黄金）。报告展示用；关键词打分用 fetch_industry_chain"""
+    chain = fetch_industry_chain(stock_code, exchange)
+    if not chain:
+        return ''
+    return chain.split('-')[-1].strip()
 
 
 def _fetch_industry_uncached(stock_code, exchange):
+    """东财 F10 公司概况 EM2016 完整三级行业链（证监会行业兜底）"""
     secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
     q = urllib.parse.quote(secucode)
     url = (
@@ -473,32 +501,55 @@ def _fetch_industry_uncached(stock_code, exchange):
     if data and data.get('success') and data.get('result'):
         items = data['result'].get('data', [])
         if items:
-            # EM2016 为东财行业分类三段链（如 有色金属-贵金属-黄金），取末段做行业名
+            # EM2016 为东财行业分类三段链（如 有色金属-贵金属-黄金），完整入库
             em = (items[0].get('EM2016') or '').strip()
             if em:
-                return em.split('-')[-1].strip()
+                return em
             csrc = (items[0].get('INDUSTRYCSRC1') or '').strip()
             if csrc:
-                return csrc.split('-')[-1].strip()
+                return csrc
     return ''
 
 
 # ===== 历史PE/PB百分位计算 =====
 
-def fetch_pershare_data(stock_code, exchange, max_years=20):
+def fetch_pershare_data(stock_code, exchange, max_years=0):
     """
-    获取历年每股收益(EPS)和每股净资产(BPS)（带本地缓存）
+    获取历年每股收益(EPS)和每股净资产(BPS)（fin_store 30天TTL）
 
-    默认拉取 20 年：评分生效规则为 T 年年报次年 5 月生效（首年还需向前回退一年），
-    10 年窗口会导致曲线前段生效年缺失、评分回退当前值反推（系统性失真）。
-    缓存键 pershare20 与旧 10 年缓存隔离，首次运行自动重拉。
+    评分生效规则为 T 年年报次年 5 月生效（首年还需向前回退一年），窗口过短会导致
+    曲线前段生效年缺失、评分回退当前值反推（系统性失真，见 detect_series_coverage）。
+    max_years=0（默认）返回库内全部年份（批量预热为2005年起22年）；显式传值才截断。
+    库内存原值（含负EPS年份），读出口径过滤与东财一致：
+    亏损年 EPS<0 不计（PE 无意义），BPS>0 保留（PB 因子可用）。
 
     Returns:
         list of dict: [{'year': 2024, 'eps': 1.82, 'bps': 5.31}, ...]  从新到旧
     """
-    return _cache_financial(
-        stock_code, 'pershare20',
-        lambda: _fetch_pershare_data_uncached(stock_code, exchange, max_years))
+    def _cap(data):
+        return data[:max_years] if max_years else data
+
+    if fin_store.is_fresh(stock_code, 'pershare'):
+        data = _pershare_filtered(fin_store.load_pershare(stock_code))
+        if data:
+            return _cap(data)
+    data = _fetch_pershare_data_uncached(stock_code, exchange, max_years or 20)
+    if data:
+        fin_store.replace_pershare(stock_code, data, source='east')
+        return _cap(data)
+    return _cap(_pershare_filtered(fin_store.load_pershare(stock_code)))
+
+
+def _pershare_filtered(raw):
+    """口径过滤：eps<=0 置0，bps<=0 置0，整行均≤0丢弃（与东财路径历史行为一致）"""
+    out = []
+    for d in raw or []:
+        eps = d.get('eps') or 0
+        bps = d.get('bps') or 0
+        if eps > 0 or bps > 0:
+            out.append({'year': d['year'], 'eps': eps if eps > 0 else 0,
+                        'bps': bps if bps > 0 else 0})
+    return out
 
 
 def _fetch_pershare_data_uncached(stock_code, exchange, max_years=20):
@@ -545,7 +596,7 @@ def _fetch_pershare_data_uncached(stock_code, exchange, max_years=20):
 
 def fetch_bonus_events(stock_code, exchange):
     """
-    获取历年分红送转实施记录（带本地缓存），来源：东财 RPT_SHAREBONUS_DET。
+    获取历年分红送转实施记录（fin_store 30天TTL + 数据源链 akshare → east）。
 
     只保留已实施（除权除息日非空）的记录，按除权日升序。
     换数据源防护：若新源未提供送转事件（返回空），build_adjusted_series 退化为
@@ -555,9 +606,73 @@ def fetch_bonus_events(stock_code, exchange):
         list of dict: [{'date': '2016-06-14', 'ratio': 0.3, 'div': 0.72}, ...]
         ratio: 每1股送转比例=(送+转)/10；div: 每1股派息(税前)=每10股派息/10
     """
-    return _cache_financial(
-        stock_code, 'bonus_v2',
-        lambda: _fetch_bonus_events_uncached(stock_code, exchange))
+    if fin_store.is_fresh(stock_code, 'bonus'):
+        # freshness 只在源明确响应后写入（akshare 空列表=确认无分红记录），空列表同样可信
+        return fin_store.load_bonus(stock_code)
+    for src in [s for s in FIN_SOURCES if s in ('akshare', 'east')]:
+        data = _BONUS_FETCHERS[src](stock_code, exchange)
+        if data is None:
+            continue  # 接口故障，试下一源
+        # 空列表=源明确确认无分红记录（两源均已区分故障与空），入库置新鲜避免重复拉取
+        fin_store.replace_bonus(stock_code, data, source=src)
+        return data
+    return fin_store.load_bonus(stock_code)
+
+
+_BONUS_FETCHERS = {
+    # lambda 惰性引用，同 _REPORT_FETCHERS
+    'akshare': lambda code, ex: _load_akshare_bonus(code),
+    'east': lambda code, ex: _fetch_bonus_events_uncached(code, ex),
+}
+
+
+def _load_akshare_bonus(stock_code):
+    """akshare 东财分红送配详情（逐股一次调用）。异常返回 None（试下一源）。
+    注意：无分红记录的股票 akshare 内部会抛 'NoneType' 异常（对空结果取下标），
+    由东财兜底返回确认空 []。"""
+    try:
+        import akshare as ak
+        import pandas as pd
+    except ImportError as e:
+        print(f"  [financial_fetcher] akshare未安装: {e}", file=sys.stderr)
+        return None
+    try:
+        df = ak.stock_fhps_detail_em(symbol=stock_code)
+    except Exception as e:
+        print(f"  [financial_fetcher] akshare分红获取 {stock_code} 失败: {e}", file=sys.stderr)
+        return None
+    if df is None or df.empty:
+        return []
+
+    def _f(row, col):
+        v = row.get(col)
+        try:
+            if v is None or pd.isna(v):
+                return 0.0
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    events = []
+    for _, r in df.iterrows():
+        ex = r.get('除权除息日')
+        ex_date = ''
+        if isinstance(ex, str):
+            ex_date = ex[:10]
+        else:
+            try:
+                if pd.notna(ex):
+                    ex_date = pd.Timestamp(ex).strftime('%Y-%m-%d')
+            except (ValueError, TypeError):
+                ex_date = ''
+        if not ex_date:
+            continue  # 预案/股东大会通过但未实施
+        events.append({
+            'date': ex_date,
+            'ratio': _f(r, '送转股份-送转总比例') / 10.0,
+            'div': _f(r, '现金分红-现金分红比例') / 10.0,
+        })
+    return events
 
 
 def _fetch_bonus_events_uncached(stock_code, exchange):
@@ -576,7 +691,7 @@ def _fetch_bonus_events_uncached(stock_code, exchange):
     data = _fetch_api(url)
     if not data or not data.get('success') or not data.get('result'):
         print(f"  [financial_fetcher] 无法获取 {stock_code} 分红送转记录", file=sys.stderr)
-        return []
+        return None   # 接口故障（None），与"接口正常但无记录"（[]）区分
     items = data['result'].get('data', [])
     events = []
     for item in items:

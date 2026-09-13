@@ -9,61 +9,51 @@
 - 常见陷阱：用户可能提供错误代码（如香农芯创 301291 vs 正确的 300475）
 - 交易所规则：上海 sh（60xxxx, 68xxxx），深圳 sz（00xxxx, 30xxxx）
 
-### 1.2 获取K线数据（2年/2批次 或 3年/3批次）
-```bash
-# 2年回测（2批次）
-curl -sL -H "User-Agent: Mozilla/5.0" \
-  "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600938,day,2024-07-09,2025-07-09,500,qfq" \
-  -o kline_2024_2025.json
-curl -sL -H "User-Agent: Mozilla/5.0" \
-  "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=sh600938,day,2025-07-09,2027-07-09,500,qfq" \
-  -o kline_2025_2027.json
-```
+### 1.2 获取数据（自动，无需手工拉取）
 
-### 1.3 搜索基本面数据（并行）
-搜索以下信息：
-- 2025年营收、归母净利润、毛利率
-- 总股本（亿股）
-- 行业分类与竞争格局
-- 关键业务结构
+K线与财报由 `build_report.py` 自动获取并缓存（详见 README"数据来源"）：
+- 10 年前复权日 K（腾讯财经，主域故障自动切备用域名）+ 不复权真实价 K（历史 PE/PB 口径）
+- 财报：iFinD PIT 时点指标主源（年报/半年报/季报），东财兜底，本地缓存 30 天
+- 批量重建 watchlist 全量用 `python scripts/batch_rebuild.py --summary`（或 `/report-zx` 命令）
+
+### 1.3 搜索基本面数据（并行，用于模型选择与定性判断）
+
+财报数字本身已自动获取（iFinD）。人工搜索主要用于：
+- 行业分类与竞争格局（辅助选模型，见 2.1）
+- 关键业务结构、分红承诺、订单/商品价格等定性信息（辅助可选因子取值与副标题撰写）
 
 ## 第二阶段：设计估值模型
 
 ### 2.1 确定模型类型
 
-根据行业特征与公司基本面，从以下8种模型中选择最合适的一种：
+根据行业特征与公司基本面，从以下 8 种模型中选择最合适的一种（权重预设见 `growth_params.md` 第二节，与 `scoring_engine.MODEL_PRESETS` 一致）：
 
 | 模型名称 | 适用行业/场景 | 核心逻辑 |
 |----------|--------------|----------|
-| **growth**（成长股） | 消费电子、半导体、SaaS、新能源车 | 业绩稳定增长，现金流好，以PE+PEG为核心，高增速支撑高估值 |
-| **cyclical**（周期股） | 煤炭、钢铁、化工、有色金属、航运 | 业绩随商品价格/周期大幅波动，以PB+ROE为核心，低PB买入、高PB卖出 |
-| **value**（深度价值） | 银行、地产、传统制造、高速公路 | 股价长期低于净资产或内在价值，以PB+股息率+DCF为核心，关注安全边际 |
-| **momentum**（动量/趋势） | 短期热门板块、题材股、技术突破股 | 以价格动量、均线偏离、量价关系为核心，适合趋势明确的行情阶段 |
-| **dividend**（高股息/红利） | 公用事业、大型银行、煤炭龙头、水电 | 以股息率+PB+ROE为核心，追求稳定现金流回报，适合防御型配置 |
-| ** turnaround**（困境反转） | 资产重组、业绩预增、行业出清后的剩者 | 以PB+业绩弹性+预期PE为核心，关注基本面边际改善信号 |
-| **tech**（科技/研发驱动） | 创新药、AI、量子计算、先进制程 | 以PS+研发投入占比+营收增速为核心，亏损期看PS，盈利期切换PE |
-| **financial**（金融 specialty） | 券商、保险、信托、租赁 | 以PB+ROE+EV/EBITDA为核心，关注资产质量、杠杆率、息差/利差变化 |
+| **staples**（必选消费） | 食品饮料、乳制品、调味品、文具、日用品 | 需求刚性、业绩稳定、现金流充沛，PE+毛利率稳定性为估值锚 |
+| **discretionary**（可选消费） | 免税旅游、白酒、家电、服装、珠宝 | 品牌溢价显著、受消费周期影响，PEG与品牌力为核心估值锚 |
+| **tech**（科技制造） | 半导体、汽车零部件、湿电子化学品、软件 | 高研发投入、高增速，PEG为最敏感因子，关注成长确定性 |
+| **cyclical**（周期资源） | 有色金属、航运、化工、煤炭、钢铁 | 盈利随大宗商品价格大幅波动，追踪商品价格位置与产能周期，股息率修正股东回报 |
+| **soe**（央企基建） | 建筑、基建、电力、交运、电信 | 高股息、订单驱动、经营稳健，股息率与PB为估值核心 |
+| **bank**（银行保险） | 银行、保险、券商 | 重资产金融业态，PB+ROE为估值核心，资产质量是关键风险变量 |
+| **realestate**（地产） | 房地产开发、物业管理 | 重资产高杠杆，NAV折价与去化率决定估值中枢 |
+| **pharma**（医药消费） | 化学制药、中药、医疗器械、医疗服务 | 政策敏感、研发驱动，营收增速与PEG反映成长预期 |
 
 **模型选择决策流程：**
 
 ```
-公司是否盈利且连续3年以上？
-├─ 是 → 行业是否有明显周期性？
-│       ├─ 是 → 周期幅度大？→ cyclical（周期股）
-│       │         └─ 周期幅度小 → dividend（高股息）或 value（深度价值）
-│       └─ 否 → 增速是否 > 15%？
-│               ├─ 是 → 属于科技/研发密集型？→ tech（科技驱动）
-│               │         └─ 否 → growth（成长股）
-│               └─ 否 → 估值是否长期低于净资产？
-│                       ├─ 是 → value（深度价值）
-│                       └─ 否 → dividend（高股息）
-└─ 否（亏损或刚扭亏）→ 是否处于困境反转阶段？
-        ├─ 是 → turnaround（困境反转）
-        └─ 否（科技亏损期）→ tech（科技/研发驱动）
-
-金融行业（银行/券商/保险）→ 无论其他条件，优先使用 financial
-短期趋势交易/技术分析为主 → momentum（动量/趋势）
+金融行业（银行/保险/券商）→ bank
+房地产开发 → realestate
+其他：
+├─ 盈利随商品价格/宏观周期大幅波动 → cyclical
+│    （例外见 2.1.1：高股息央企化的周期股优先 soe）
+├─ 日常消费/医药 → staples / pharma
+├─ 品牌驱动、PEG敏感的可选消费 → discretionary
+├─ 高研发、高增速 → tech
+└─ 高分红、央国企、订单驱动 → soe
 ```
+
+> 旧版 growth/value/momentum/dividend/turnaround/financial 模型已废弃；`growth` 参数自动映射为 `staples`。
 
 ### 2.1.1 模型选择二次确认（财务特征反例清单，2026-08 复盘新增）
 
@@ -80,80 +70,76 @@ curl -sL -H "User-Agent: Mozilla/5.0" \
 | 亏损或刚扭亏（PE 无意义） | PE/PEG 恒中性 50，评分区分度低，输出必须注明"盈利锚失效"，重点看 PB 位置+营收增速+研发 |
 
 **真实案例（2026-08 复盘）**：
-- **中远海控**：行业是航运（cyclical 直觉），但实际已进化为"高股息央企价值股"——2025-2027 分红承诺 30-50%、股息率 6.5%、现金 1508 亿、长协收入占比 70%。用 cyclical 的 10 年 PE 区间（0.9-7.2，被 2020-2022 暴利年拉低）导致常态盈利下 PE 恒超 90th，近两年 74% 交易日被误判"高估"。改用 soe + 当时的人工校准区间（PE 4-12）后恢复正常（2026-09 起人工区间已删除，该股交由换挡检测自动处理，受数据源年报覆盖限制暂返回 insufficient_history）。
+- **中远海控**：行业是航运（cyclical 直觉），但实际已进化为"高股息央企价值股"——2025-2027 分红承诺 30-50%、股息率 6.5%、现金 1508 亿、长协收入占比 70%。用 cyclical 的 10 年 PE 区间（0.9-7.2，被 2020-2022 暴利年拉低）导致常态盈利下 PE 恒超 90th，近两年 74% 交易日被误判"高估"。改用 soe + 当时的人工校准区间（PE 4-12）后恢复正常（2026-09 起人工区间已删除，该股交由换挡检测自动处理；iFinD 接入后年报覆盖含上市前历史，insufficient_history 已清零，实际 window_reason 以报告 meta 为准）。
 - **垒知集团**：曾误用 soe（"集团/检测"字面印象），但其 ROE 4.3%、几乎无分红、民企——soe 的股息率/订单增速因子全部缺失。应选 cyclical（周期底部）或 value。
 - **宏达股份**：BPS 从 2017 年 2.43 断裂到 2021 年后 0.17-0.20（金鼎锌业案败诉+持续亏损侵蚀），净资产近枯竭。自动 PB 区间 1.8-35 被 2017-2019 高 BPS 污染，当前 PB 11-30 倍实为"壳+重组/铜矿期权"定价——PE/PB 全部失效，评分仅参考，结论以定性为主。
 - **元琛科技**：2025 年亏 0.31 亿、2026Q1 刚扭亏（营收 +45%），tech 模型 PE/PEG 恒 50 中性，近两年 99% 时间评分 40-69 无区分度——亏损股无盈利锚的现实，输出需注明评分局限。
 
-### 2.2 设定参数
-- **PE历史区间**：参考该股过去2-3年PE(TTM)的波动范围
-- **PB历史区间**：参考该股过去2-3年PB的波动范围
-- **预期增速**：根据行业增速、公司地位合理估算
-- **PS历史区间**（tech模型适用）：参考过去2-3年市销率波动范围
-- **股息率区间**（dividend模型适用）：参考过去分红记录与股息率水平
-- **ROE区间**（financial/cyclical模型适用）：参考行业平均ROE水平
+### 2.2 设定参数（自动为主，人工仅逃生阀）
+
+- **PE/PB 区间**：不手动设定。评分默认用历史百分位 rank 映射；盈利换挡自动检测命中时 PE 分位只用换挡生效后子序列（`meta.window_reason` 可查，见 growth_params 第八节）。`--pe/--pb` 仅为单次逃生阀（线性映射），非必要不用
+- **预期增速**：默认自动（历史 CAGR，报告内同时提示最新报告期同比）；`--growth` 手动覆盖需给出依据
+- **股息率**：`--dps 每股年分红` 传入后按 `dps/当日价` 逐日动态计算（历史低价区股息率自动升高）；不传则因子缺失、权重自动再分配
+- **可选因子**：`--键:值` 传入（如 `--commodity_dev:-0.15`）；未传的自动从 iFinD 财报填充（ROE 近 5 年报均值、毛利率稳定性、营收增速）
 
 ### 2.3 参数设计原则
-- PE区间应覆盖95%以上的历史数据
-- 增长型行业PE区间偏高（20-80），周期型偏低（3-25）
-- PB区间一般 0.3-6.0，金融/资源类偏低
-- 增速假设不宜过高，10-20%为合理区间
-- tech模型的PS区间参考同行业可比公司，亏损期PS 2-15倍为常见范围
-- dividend模型的股息率 > 4% 视为高股息，> 6% 视为极高（需警惕可持续性）
 
-### 2.4 输入可选因子
+- **不手填 PE/PB 区间**：区间锚失真由换挡检测与亏损段警示自动处理；人工区间会覆盖自动机制（2026-08 的 MANUAL_RANGES 已删除）
+- 增速假设 10-20% 为合理区间，周期股更低；扭亏/暴增（同比 >500%）属低基数，走估值消化曲线提示，不线性外推
+- 增速与 DPS 属人工参数，`meta.param_source` 标记来源，下次无参运行自动恢复（防止批量重跑静默重置）
 
-根据所选模型，可额外传入可选因子来增强估值评分的针对性。可选因子通过命令行参数 `--factors` 传入（详见注意事项第7条）。
+### 2.4 可选因子输入
 
-| 模型 | 默认因子 | 可选因子 |
-|------|---------|---------|
-| growth | PE, PB, PEG, MA偏离, 量能, 波动率 | +研发投入占比, +营收增速, +毛利率趋势 |
-| cyclical | PE, PB, PEG, MA偏离, 量能, 波动率 | +商品价格指数, +产能利用率, +库存周期 |
-| value | PE, PB, PEG, MA偏离, 量能, 波动率 | +股息率, +净资产折溢价, +EV/EBITDA |
-| momentum | PE, PB, PEG, MA偏离, 量能, 波动率 | +RSI, +MACD信号, +资金流向 |
-| dividend | PE, PB, PEG, MA偏离, 量能, 波动率 | +股息率, +分红连续年数, + payout比率 |
-| turnaround | PE, PB, PEG, MA偏离, 量能, 波动率 | +业绩同比变化, +资产负债率, +管理层持股变化 |
-| tech | PS, MA偏离, 量能, 波动率, +营收增速, +研发占比 | +用户/订单增速, +毛利率, +现金消耗率 |
-| financial | PB, ROE, MA偏离, 量能, 波动率 | +不良贷款率, +净息差, +资本充足率 |
+每模型固定 5 因子（2026-09 审计后；量能/波动率经 IC 审计已从预设剔除）。估值/技术因子由 K 线自动计算，**可选因子**通过命令行 `--键:值` 传入，未传的自动从财报填充，缺失时权重按比例摊回：
+
+| 模型 | 默认因子（自动计算） | 建议关注/手动输入的可选因子 |
+|------|---------------------|---------------------------|
+| staples | PE, PB, PEG, MA偏离, 毛利率稳定性 | `--margin_stability`（不传则自动填充） |
+| discretionary | PE, PB, PEG, MA偏离, 品牌溢价度 | `--brand_premium` |
+| tech | PE, PB, PEG, MA偏离, 研发费用率 | `--rd_ratio` |
+| cyclical | PE, PB, 商品价格偏离, MA偏离, 股息率 | `--commodity_dev`（关键）、`--dps` |
+| soe | PE, PB, 股息率, MA偏离, 订单增速 | `--dps`（使股息率生效）、`--order_growth` |
+| bank | PB, ROE, 股息率, 不良/偿付, MA偏离 | `--roe`、`--npl_ratio`、`--dps` |
+| realestate | NAV折价, PB, 去化率, MA偏离, 杠杆率 | `--nav_discount`、`--clearance_rate`、`--leverage` |
+| pharma | PE, PB, PEG, MA偏离, 营收增速 | `--revenue_growth`（不传则自动填充） |
 
 **可选因子说明：**
-- 默认因子已内置在评分引擎中，无需手动传入
-- 可选因子需要用户通过 `--factors` 参数显式指定
-- 未提供的可选因子将使用模型内置的默认值（通常为中性值）
-- 最多可同时启用5个额外可选因子
+- 输入格式为 `--键:值`（如 `--roe:0.15`），无值传入的因子自动从 iFinD 财报计算填充
+- 未提供的可选因子权重按比例摊到已有值因子上（算法见 growth_params 第五节）
+- 产能利用率（capacity_util）等旧因子键保留兼容但当前预设不使用
 
 ## 第三阶段：构建报告
 
-### 3.1 合并K线数据
-- 多批次数据按日期去重合并
-- 确保数据连续性（约480-490个交易日）
+### 3.1 运行 build_report
+```bash
+python scripts/build_report.py <代码> --model <模型> [可选因子/覆盖参数]
+```
+- K 线（前复权 + 不复权）与财报自动获取缓存；盘中检测到实时价时追加虚拟点（收盘后自动消失）
 
-### 3.2 计算估值评分
-- 对每个交易日计算PE/PB/PEG/MA偏离/量能/波动率6个因子
-- 加权汇总得到综合分数（0-100）
-- 计算历史百分位（20th/80th）
+### 3.2 评分机制（自动）
+- 每个交易日按模型 5 因子加权得 0-100 分；历史 PE/PB = 当日不复权真实价 ÷ 已生效 EPS/BPS（T 年年报次年 5 月生效，送转/派息逐日重述）
+- **报告曲线为"当前参数视角"（历史分数含未来信息，仅展示口径，不作历史验证）**；PIT 验证用 `scripts/run_backtest.py`
+- 盈利换挡检测、亏损段警示、估值消化曲线自动触发，结果记录在 meta（window_start/window_reason 等）
 
 ### 3.3 生成HTML
 - 内联ECharts库
-- 包含全屏覆盖层、十字轴光标、百分位线
-- 输出自包含单文件
+- 包含全屏覆盖层、十字轴光标、百分位线、盘中 markpoint
+- 输出自包含单文件 + 同名 JSON 数据中间件（artifacts/reports 与 artifacts/json_data）
 
 ## 第四阶段：验证
 
-### 4.1 语法验证
-```bash
-node --check  # 验证JS语法
-```
+### 4.1 生成日志检查
+- 控制台出现 `[警告]` 行（EPS 序列覆盖缺口、财报截断、送转疑点）必须逐条处理，不得带警告交付
+- 注意 `[恢复]` 行：上次人工参数（growth/dps/因子/副标题）自动沿用，显式传参可覆盖
 
 ### 4.2 数据验证
-- 检查交易日数量（应约480-490天）
-- 检查最新分数是否合理
-- 检查PE/PB是否与实际一致
+- meta.period 应覆盖约 10 年、末端为最新交易日
+- 最新 PE/PB 与行情软件一致；`meta.window_reason` 分布合理（全量基准：regime_switch 15 / no_switch 28 / loss_period_skip 3，insufficient_history 应为 0）
 
 ### 4.3 结果合理性校验（2026-08 复盘新增，交付前必做）
 
-1. **评分分布检查**：统计近 2 年评分分布，若单一档位占比 >70% → 参数锚定异常，必须复查区间与模型
-2. **因子极端值检查**：权重 >15% 的核心因子得分为 0 或 100 → 区间锚失真（如 PE 恒 0 分），须重设区间
+1. **评分分布检查**：统计近 2 年评分分布，若单一档位占比 >70% → 参数锚定异常，复查模型选择与 `meta.window_reason`（区间由自动机制处理，不手设）
+2. **因子极端值检查**：权重 >15% 的核心因子得分为 0 或 100 → 区间锚失真（如 PE 恒 0 分），先查模型选择与换挡窗口/亏损段标注，必要时核对 EPS 序列覆盖
 3. **常识交叉验证**（任一成立 → 几乎必是模型问题）：
    - PE<10 + 股息率>5% + 破净/接近破净，却被评为"高估"
    - 历史 PB 10% 分位以下的破净股，被评为"高估"
@@ -170,84 +156,59 @@ node --check  # 验证JS语法
 4. **总股本字段47可能返回0**，需要从网上搜索确认
 5. **科创板代码**：sh688xxx，属于上海交易所
 6. **创业板代码**：sz300xxx，属于深圳交易所
-7. **可选因子命令行参数格式**：使用 `--factors` 参数传入可选因子，格式为 `key:value` 对，多个因子用逗号分隔。数值型因子直接传数值，枚举型因子传预定义值。
+7. **可选因子命令行参数格式**：`--键:值` 直接附加在 build_report 命令后，多个因子重复传参即可。有效键：`commodity_dev` / `capacity_util` / `roe` / `dividend_yield` / `npl_ratio` / `nav_discount` / `clearance_rate` / `leverage` / `rd_ratio` / `margin_stability` / `brand_premium` / `order_growth` / `revenue_growth`。
    ```bash
-   # 格式
-   --factors "因子名1:值1,因子名2:值2,因子名3:值3"
+   # 示例：cyclical 模型输入商品价格偏离（现价较历史均价低 10%）
+   python scripts/build_report.py 601899 --model cyclical --commodity_dev:-0.10
 
-   # 示例：growth模型附加研发投入占比和营收增速
-   --factors "rd_ratio:15.2,revenue_growth:28.5,gross_margin_trend:up"
+   # 示例：soe 模型传每股年分红（股息率因子逐日动态）+ 订单增速
+   python scripts/build_report.py 601668 --model soe --dps 0.80 --order_growth:0.12
 
-   # 示例：cyclical模型附加商品价格与产能利用率
-   --factors "commodity_index:112.5,capacity_util:0.85,inventory_cycle:replenishment"
-
-   # 示例：dividend模型附加股息相关信息
-   --factors "dividend_yield:5.8,consecutive_years:8,payout_ratio:0.6"
-
-   # 示例：tech模型附加用户增速与毛利率
-   --factors "user_growth:35.2,gross_margin:62.5,burn_rate:low"
+   # 示例：bank 模型手动 ROE 与不良率（覆盖自动填充值）
+   python scripts/build_report.py 601398 --model bank --roe:0.11 --npl_ratio:0.012
    ```
-   **枚举值参考**：
-   - `gross_margin_trend`: `up` / `flat` / `down`
-   - `inventory_cycle`: `accumulation` / `replenishment` / `depletion`
-   - `burn_rate`: `low` / `medium` / `high`
-   - `MACD_signal`: `golden_cross` / `dead_cross` / `neutral`
-   - `fund_flow`: `net_inflow` / `net_outflow` / `balanced`
+   注意：股息率优先用 `--dps`（逐日动态），直接传 `--dividend_yield` 为恒定值兜底；旧版 `--factors "k:v,..."` 逗号格式已废弃。
 
 ## 使用示例
 
-### 示例1：成长股分析（growth模型）
+### 示例1：必选消费（staples）
 ```bash
-# 假设分析宁德时代 sz300750
-node run.js --code sz300750 --model growth --pe-range 20-80 --pb-range 2-8 \
-  --growth-rate 25 --factors "rd_ratio:8.5,revenue_growth:22.3,gross_margin_trend:flat"
+python scripts/build_report.py 600887 --model staples
 ```
 
-### 示例2：周期股分析（cyclical模型）
+### 示例2：周期资源（cyclical，输入商品价格偏离）
 ```bash
-# 假设分析中国神华 sh601088
-node run.js --code sh601088 --model cyclical --pe-range 5-18 --pb-range 0.8-2.5 \
-  --growth-rate 5 --factors "commodity_index:98.2,capacity_util:0.88,inventory_cycle:depletion"
+python scripts/build_report.py 601899 --model cyclical --commodity_dev:-0.10 --dps 0.80
 ```
 
-### 示例3：深度价值股分析（value模型）
+### 示例3：央企基建（soe，输入每股分红与订单增速）
 ```bash
-# 假设分析某银行股 sh601398
-node run.js --code sh601398 --model value --pe-range 4-8 --pb-range 0.4-0.9 \
-  --growth-rate 3 --factors "dividend_yield:6.2,nav_discount:0.35,ev_ebitda:5.1"
+python scripts/build_report.py 601668 --model soe --dps 0.62 --order_growth:0.08
 ```
 
-### 示例4：高股息红利股分析（dividend模型）
+### 示例4：银行保险（bank，手动 ROE/不良率）
 ```bash
-# 假设分析长江电力 sh600900
-node run.js --code sh600900 --model dividend --pe-range 15-25 --pb-range 2-5 \
-  --growth-rate 8 --factors "dividend_yield:4.2,consecutive_years:15,payout_ratio:0.55"
+python scripts/build_report.py 601398 --model bank --roe:0.11 --npl_ratio:0.012
 ```
 
-### 示例5：科技研发驱动分析（tech模型）
+### 示例5：科技制造（tech，输入研发费用率）
 ```bash
-# 假设分析某AI公司 sz300XXX（亏损期）
-node run.js --code sz300XXX --model tech --ps-range 3-12 --growth-rate 45 \
-  --factors "rd_ratio:32.1,revenue_growth:68.5,user_growth:52.3,gross_margin:71.2,burn_rate:medium"
+python scripts/build_report.py 688041 --model tech --rd_ratio:0.28
 ```
 
-### 示例6：困境反转分析（turnaround模型）
+### 示例6：单次逃生阀——手动 PE/PB 区间（线性映射，仅当次生效）
 ```bash
-# 假设分析某重组股 sh600XXX
-node run.js --code sh600XXX --model turnaround --pe-range 10-30 --pb-range 1-3 \
-  --growth-rate 35 --factors "yoy_change:152.8,debt_ratio:0.55,mgmt_share_change:up"
+python scripts/build_report.py 600887 --model staples --pe 10 35 --pb 1.5 5.0
 ```
 
-### 示例7：金融 specialty 分析（financial模型）
+### 示例7：watchlist 全量重建 + 汇总筛选
 ```bash
-# 假设分析某券商 sh601XXX
-node run.js --code sh601XXX --model financial --pb-range 1-2.5 --roe-range 8-15 \
-  --factors "npl_ratio:0.85,net_interest_margin:2.1,capital_adequacy:13.5"
+python scripts/batch_rebuild.py --summary
+# 或按 report-zx 命令流程（含 iFinD 预热与结果校验）
 ```
 
-### 示例8：动量趋势分析（momentum模型）
-```bash
-# 假设分析某热门题材股 sz000XXX
-node run.js --code sz000XXX --model momentum --pe-range 15-40 --pb-range 1.5-4 \
-  --factors "rsi:72,macd_signal:golden_cross,fund_flow:net_inflow"
-```
+> 回测验证（PIT 口径，与报告曲线口径不同）：
+> ```bash
+> python scripts/run_backtest.py                      # 全量 IC/分层/策略模拟
+> python scripts/run_backtest.py --stocks 600887,601899 --start 2018-01-01
+> ```

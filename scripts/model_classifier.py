@@ -60,6 +60,11 @@ _MODEL_RULES = {
         (lambda f: f.get('revenue_growth_5y', 0) < 0.15, 1, '低增速'),
         (lambda f: _kw_score(f.get('industry', ''), 'bank') > 0, 6, '金融行业关键词'),
     ],
+    'realestate': [
+        (lambda f: _kw_score(f.get('industry', ''), 'realestate') > 0, 6, '地产关键词'),
+        (lambda f: 0.08 <= f.get('avg_roe', 0) <= 0.20, 2, 'ROE中等(重资产)'),
+        (lambda f: f.get('revenue_growth_5y', 0) < 0.15, 1, '增速平稳'),
+    ],
     'soe': [
         (lambda f: f.get('dividend_yield', 0) >= 0.04, 4, '高股息'),
         (lambda f: 0.06 <= f.get('avg_roe', 0) <= 0.15, 2, 'ROE稳健中等'),
@@ -118,38 +123,16 @@ def _fetch_json(url, timeout=15):
 
 def fetch_industry(stock_code, exchange):
     """
-    获取股票行业分类（东方财富 EM2016 三级行业，带本地缓存）
+    获取股票行业分类（东方财富 EM2016 三级行业链，fin_store 30天TTL）
+
+    委托 financial_fetcher.fetch_industry_chain（行业链唯一入库点），
+    不再自建缓存键 'industry'（历史重复实现已移除）。
 
     Returns:
-        str: 行业描述，如 '电子设备-半导体-集成电路'；失败返回 ''
+        str: 行业链，如 '电子设备-半导体-集成电路'；失败返回 ''
     """
-    return _cache_financial(
-        stock_code, 'industry',
-        lambda: _fetch_industry_uncached(stock_code, exchange))
-
-
-def _fetch_industry_uncached(stock_code, exchange):
-    """
-    获取股票行业分类（东方财富 EM2016 三级行业）
-
-    Returns:
-        str: 行业描述，如 '电子设备-半导体-集成电路'；失败返回 ''
-    """
-    secucode = f"{stock_code}.{'SH' if exchange == 'sh' else 'SZ'}"
-    url = (
-        "https://datacenter.eastmoney.com/securities/api/data/v1/get"
-        "?reportName=RPT_F10_BASIC_ORGINFO&columns=ALL"
-        f"&filter=(SECUCODE=%22{secucode}%22)"
-        "&source=HSF10&client=PC"
-    )
-    data = _fetch_json(url)
-    if not data or not data.get('success') or not data.get('result'):
-        return ''
-    items = data['result'].get('data', [])
-    if not items:
-        return ''
-    # EM2016 为东财三级行业；INDUSTRYCSRC1 为证监会行业（兜底）
-    return items[0].get('EM2016') or items[0].get('INDUSTRYCSRC1') or ''
+    from financial_fetcher import fetch_industry_chain
+    return fetch_industry_chain(stock_code, exchange)
 
 
 def fetch_rd_ratio(stock_code, exchange, max_years=5):

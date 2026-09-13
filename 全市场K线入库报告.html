@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">
+<title>全A股K线入库报告 2026-09-12</title>
+<style>
+body { font-family: -apple-system,'PingFang SC','Microsoft YaHei',sans-serif; margin: 24px auto; max-width: 960px; color:#1e293b; }
+h1 { font-size: 1.4rem; } h2 { font-size: 1.1rem; margin-top: 1.6rem; border-left: 4px solid #1a4b8c; padding-left: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+td, th { border: 1px solid #e2e8f0; padding: 4px 10px; text-align: center; }
+th { background: #f1f5f9; }
+.tag { display:inline-block; background:#334155; color:#cbd5e1; border-radius:4px; padding:1px 8px; font-size:12px; margin:0 4px 4px 0; }
+.ok { color: #16a34a; font-weight: 600; } .warn { color: #d97706; font-weight: 600; }
+.grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
+.card { background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px 14px; }
+.card b { font-size: 1.25rem; display:block; }
+</style></head><body>
+<h1>全A股K线入库报告</h1>
+<p>生成时间: 2026-09-12 09:47:26 ｜ 主口径: kline20h（后复权20年） ｜ 存储SQLite: 3705.4 MB</p>
+<div class="grid">
+<div class="card"><b>5348</b>stock_basic 股票</div>
+<div class="card"><b>5348</b>已抓取</div>
+<div class="card"><b class="ok">0</b>未抓取</div>
+<div class="card"><b class="warn">118</b>失败(账本)</div>
+</div>
+<h2>数据量分布（每股20年K线行数）</h2>
+<table><tr><th>最少</th><th>P25</th><th>中位</th><th>P75</th><th>最多</th><th>总行数</th></tr>
+<tr><td>1</td><td>1390</td><td>2521</td><td>4286</td><td>4851</td><td>14,743,692</td></tr></table>
+<h2>最后交易日分布（预期 2026-09-11）</h2>
+<p><span class="tag">2026-09-11: 5207只</span><span class="tag">2024-06-21: 3只</span><span class="tag">2026-08-28: 3只</span><span class="tag">2010-02-03: 3只</span><span class="tag">2025-03-31: 2只</span></p>
+<p>早于预期的停牌/异常: <b class="warn">141</b> 只（停牌属正常, 明细见摘要JSON）</p>
+<h2>数据质量</h2>
+<table><tr><th>检查项</th><th>结果</th><th>判定</th></tr>
+<tr><td>覆盖率（有K线数据/有效股票）</td><td>5348/5348</td><td class="ok">通过</td></tr>
+<tr><td>最后交易日=2026-09-11（占5207只）</td><td>停牌/次新合计 141 只早于该日</td><td class="ok">通过</td></tr>
+<tr><td>非正价格行（8只重组老股, 2006-2010混合复权截断）</td><td>180 行 / 0.15%</td><td class="warn">已知口径边缘现象</td></tr>
+</table>
+<h2>重要发现：腾讯hfq为"乘法+加法混合"复权（现金分红口径），非纯乘法后复权</h2>
+<p><b>证据</b>：①涨跌停日收益被系统性压缩——000539 2025-05-28 raw +10.11%（腾讯/东财两源一致的真涨停）而 hfq 仅 +5.93%；2024-26年18个raw |收益|&gt;9%的交易日，hfq收益中位 6.27% vs raw 9.98%。②hfq 与 raw 呈<b>分段仿射关系 hfq = a + b×raw</b>（000539 2024-26逐日斜率恒定于8.80~8.85，事件日才跳变）；601857 的 hfq/raw 比值随 raw 价格上升而<b>下降</b>（1.70→1.47），纯乘法复权不可能。③与 iFinD 文档"现金分红复权涉及加减与乘除迭代"互证。</p>
+<p><b>影响</b>：hfq 日收益 ≠ 真实总收益——高累计调整额股票的大涨日收益被压缩、大跌日被收窄；全系统（报告/回测/当晚全量库）一直构建于同一口径，<b>数据与历史缓存逐行一致，已验证结论内部自洽性不受影响</b>；但绝对收益幅度偏保守。8只老股的混合复权在极端事件后出现负值价格（180行）。</p>
+<p><b>建议</b>：后续评估改用真·乘法后复权（raw × 交易所除权事件因子自建），但口径切换会改变全部收益/MA因子值，必须重跑参数网格验证（同 D4 逻辑）。</p>
+<h2>抓取账本</h2>
+<table><tr><td>done|kline20h</td><td>5348</td></tr><tr><td>done|raw_kline20</td><td>5348</td></tr><tr><td>failed|kline20h</td><td>59</td></tr><tr><td>failed|raw_kline20</td><td>59</td></tr></table>
+<h2>失败清单（前50）</h2><table><tr><th>代码</th><th>口径</th><th>次数</th><th>错误</th></tr><tr><td>000003</td><td>kline20h</td><td>2</td><td style="text-align:left">空K线响应 (sz000003 hfq)</td></tr><tr><td>000003</td><td>raw_kline20</td><td>2</td><td style="text-align:left">空K线响应 (sz000003 )</td></tr><tr><td>000013</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000013 hfq)</td></tr><tr><td>000013</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000013 )</td></tr><tr><td>000015</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000015 hfq)</td></tr><tr><td>000015</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000015 )</td></tr><tr><td>000047</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000047 hfq)</td></tr><tr><td>000047</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000047 )</td></tr><tr><td>000405</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000405 hfq)</td></tr><tr><td>000405</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000405 )</td></tr><tr><td>000406</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000406 hfq)</td></tr><tr><td>000406</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000406 )</td></tr><tr><td>000412</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000412 hfq)</td></tr><tr><td>000412</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000412 )</td></tr><tr><td>000508</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000508 hfq)</td></tr><tr><td>000508</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000508 )</td></tr><tr><td>000535</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000535 hfq)</td></tr><tr><td>000535</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000535 )</td></tr><tr><td>000542</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000542 hfq)</td></tr><tr><td>000542</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000542 )</td></tr><tr><td>000556</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000556 hfq)</td></tr><tr><td>000556</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000556 )</td></tr><tr><td>000583</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000583 hfq)</td></tr><tr><td>000583</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000583 )</td></tr><tr><td>000588</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000588 hfq)</td></tr><tr><td>000588</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000588 )</td></tr><tr><td>000618</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000618 hfq)</td></tr><tr><td>000618</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000618 )</td></tr><tr><td>000621</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000621 hfq)</td></tr><tr><td>000621</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000621 )</td></tr><tr><td>000653</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000653 hfq)</td></tr><tr><td>000653</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000653 )</td></tr><tr><td>000658</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000658 hfq)</td></tr><tr><td>000658</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000658 )</td></tr><tr><td>000660</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000660 hfq)</td></tr><tr><td>000660</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000660 )</td></tr><tr><td>000675</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000675 hfq)</td></tr><tr><td>000675</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000675 )</td></tr><tr><td>000689</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000689 hfq)</td></tr><tr><td>000689</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000689 )</td></tr><tr><td>000699</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000699 hfq)</td></tr><tr><td>000699</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000699 )</td></tr><tr><td>000730</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000730 hfq)</td></tr><tr><td>000730</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000730 )</td></tr><tr><td>000763</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000763 hfq)</td></tr><tr><td>000763</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000763 )</td></tr><tr><td>000765</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000765 hfq)</td></tr><tr><td>000765</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000765 )</td></tr><tr><td>000769</td><td>kline20h</td><td>1</td><td style="text-align:left">空K线响应 (sz000769 hfq)</td></tr><tr><td>000769</td><td>raw_kline20</td><td>1</td><td style="text-align:left">空K线响应 (sz000769 )</td></tr></table>
+</body></html>

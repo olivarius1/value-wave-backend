@@ -1,20 +1,20 @@
 ---
 name: stock-valuation-skill
-description: A股估值分析Skill，自动获取同花顺iFinD年报/季报数据（东财兜底）+腾讯财经10年K线，生成自包含HTML估值回测报告。支持8种行业模型（每模型5因子，≤7硬约束）、盈利换挡自动检测、浅灰色面积图、全屏图表。
+description: A股估值分析Skill，自动获取历年年报/季报财务数据（akshare东财业绩报表批量 + 东财数据中心兜底）+腾讯财经K线（20年主序列/15年报告窗口），生成自包含HTML估值回测报告。支持8种行业模型（每模型5因子，≤7硬约束）、盈利换挡自动检测、浅灰色面积图、全屏图表。
 ---
 
 # A股估值系统 Skill
 
-基于腾讯财经K线数据和同花顺iFinD财务报表API（东财自动兜底），自动生成单文件自包含HTML估值分析报告的独立Skill。完全独立，不依赖后端系统代码或数据库。
+基于腾讯财经K线数据和 akshare/东财财务数据链（iFinD 因额度耗尽默认禁用，可经 FIN_SOURCES 恢复），自动生成单文件自包含HTML估值分析报告的独立Skill。完全独立，不依赖后端系统代码或数据库。
 
 ## 功能特性
 
 - **8种行业估值模型**：必选消费、可选消费、科技制造、周期资源、央企基建、银行保险、地产、医药消费（每模型 5 个因子，硬约束 ≤7，2026-09 审计后）
 - **估值因子**：4种基础因子（PE、PB、PEG、MA偏离）+ 13种可选因子（ROE、股息率、研发费用率、毛利率稳定性、品牌溢价度、NAV折价、去化率、杠杆率、营收增速、订单增速、商品价格偏离、产能利用率、不良率）；量能/波动率因子经回测 IC 审计后已从预设移除（函数保留）
-- **财务报表自动获取**：从 iFinD PIT时点指标自动拉取历年年报、半年报、季报（含上市前历史；东财为自动兜底），自动计算并填充ROE（近5年报均值）、毛利率稳定性、营收增速等因子
+- **财务报表自动获取**：数据源链（env `FIN_SOURCES`，默认 `akshare,east`）——akshare 东财业绩报表按报告期批量预热全市场（`fetch_all_financials.py`）→ 东财数据中心逐股兜底 → iFinD 仅在显式启用时参与（额度耗尽，默认禁用）；统一落 fin_store.db (SQLite)，30天TTL；自动计算并填充ROE（近5年报均值）、毛利率稳定性、营收增速等因子
 - **EPS/BPS 逐日滚动重述**：拉取东财分红送配明细，按送转/派息事件对历史 EPS/BPS 逐日重述（叠加20年财报窗口），消除5月年报切换的口径悬崖；覆盖检测在生效年缺失或送转与盈利跳变矛盾时告警
 - **盈利换挡自动检测**：年报净利润按首年对齐每 5 年一段取中位数，相邻段比值 >3 判定向上换挡；命中时 PE 分位只用换挡生效后子序列（对齐年报披露次年 5 月起），PB 与其余因子维持全历史；向下回落/亏损段/历史不足仅标注不切窗（meta.window_reason，亏损段报告中有醒目警示）
-- **10年K线自动获取**：未提供K线文件时自动从腾讯财经API拉取最近10年日K线数据（不足则用最长可用数据）；历史 PE/PB 用当日不复权真实价计算
+- **K线自动获取**：从腾讯财经API拉取20年日K线主序列，报告/评分窗口取最近15年（不足则用最长可用数据）；历史 PE/PB 与展示价格用当日不复权真实价，提示框另列前复权价（离线递推，口径与腾讯/同花顺一致）
 - **行业自动识别**：东财 F10 公司概况 EM2016 行业分类自动填入报告；获取失败时输出中性表述（不出现未知行业）
 - **估值消化曲线**：高估档且最新报告期净利同比 ≥ 阈值（--digest-growth，默认 60%）时，按 EPS×(1+g) 等效压缩 PE/PEG 因子同口径重算全曲线，紫色虚线叠加展示、tooltip 与测算卡同步呈现
 - **章节导航栏**：sticky 顶部导航（业务全景/评分模型/回测曲线/关键时点/逻辑风险），平滑滚动 + 当前章节高亮
@@ -36,8 +36,10 @@ stock-valuation-skill/
 │   ├── build_report.py        # 报告生成入口（argparse + 自动获取 + 缓存）
 │   ├── report_generator.py    # 核心报告生成器（完全独立，不依赖后端）
 │   ├── kline_cache.py         # K线缓存与增量更新模块
-│   ├── financial_fetcher.py   # 财务报表数据获取器（iFinD主源+东财兜底）
-│   ├── ths_fetcher.py         # iFinD 财报预热CLI（PIT时点指标批量拉取）
+│   ├── financial_fetcher.py   # 财务报表数据获取器（数据源门面: akshare批量/东财兜底，iFinD可选）
+│   ├── fin_store.py           # 财务数据SQLite存储层（fin_store.db: 报表/每股/分红/行业 + 断点账本）
+│   ├── ths_fetcher.py         # iFinD 财报预热CLI（额度耗尽默认禁用，FIN_SOURCES=east,ths 恢复）
+│   ├── fetch_all_financials.py # 全市场财报批量编排器（akshare业绩报表87期批量+缺口补齐+校验）
 │   ├── factor_analysis.py     # 因子级IC与引擎版本对比
 │   ├── scan_watchlist.py      # watchlist 快速扫描（终端打分表）
 │   ├── batch_rebuild.py       # 批量重建报告（watchlist.txt 驱动）
@@ -123,11 +125,16 @@ python scripts/batch_rebuild.py --retry                  # 只重跑上次失败
 - **腾讯财经K线API**：`http://web.ifzq.gtimg.cn/appstock/app/fqkline/get`
   - 每次最多返回500天数据，脚本自动分批获取
   - 必须带 `User-Agent` 头
-- **东方财富数据中心API**：`https://datacenter.eastmoney.com/securities/api/data/v1/get`
-  - RPT_F10_FINANCE_MAINFINADATA：历年年报/半年报/季报核心财务指标（20年窗口，重述与区间计算依据）
-  - RPT_SHAREBONUS_DET：分红送配明细（送转/派息事件，逐日重述依据）
-  - RPT_F10_BASIC_ORGINFO：F10 公司概况（EM2016 行业分类）
-  - push2 域名接口间歇性拒连，不作为数据源
+- **财务数据（数据源链，env FIN_SOURCES 控制，默认 akshare,east）**：
+  - akshare `stock_yjbb_em`：东财业绩报表·按报告期全市场批量（2005Q1起87期，全市场预热主力，`fetch_all_financials.py --bulk-reports`）
+  - akshare `stock_fhps_detail_em`：分红送配详情逐股（门面内东财直连兜底）
+  - 东方财富数据中心API：`https://datacenter.eastmoney.com/securities/api/data/v1/get`（公开接口，无额度限制）
+    - RPT_F10_FINANCE_MAINFINADATA：历年年报/半年报/季报核心财务指标（逐股兜底+总股本）
+    - RPT_SHAREBONUS_DET：分红送配明细
+    - RPT_F10_BASIC_ORGINFO：F10 公司概况（EM2016 行业分类）
+    - push2 域名接口间歇性拒连，不作为数据源
+  - 同花顺 iFinD：额度已耗尽默认禁用；恢复后 `FIN_SOURCES=east,ths python3 ...` 重新作为财报优先源
+  - 存储：`artifacts/.cache/fin_store.db`（SQLite，30天TTL），旧 `artifacts/.cache/financial/*.json` 已迁移留档
 
 ## 模型选择校验（重要，2026-08 复盘新增）
 
@@ -155,6 +162,50 @@ python scripts/batch_rebuild.py --retry                  # 只重跑上次失败
 6. **统计概念默认读者无量化背景**：各配一句大白话+一个3-5行小例子（IC=方向对不对、Spearman=只比排名抗极端值、周频采样=相邻日样本重叠会虚高、中位数=不被极端值带偏）。已有术语表在 docs/backtest_guide.md，解读时复用其语言。
 7. **先答问题本身，再给机制**：问"哪些股票"先给股票表；问"能不能做到"先给能/不能+关键数字，机制解释放后面。
 8. **回测前先亮方案**（对象/数据/口径/检验项清单），跑完按方案顺序汇报，让每个数字都能对回方案的某一项。
+
+## 全市场AI模型分类（2026-09-12 新增，scripts/ai_model_classifier.py）
+
+用 AI API 批量把全市场股票归入 8 种估值模型，结果入 `kline_store.db` 的 `model_classify` 表，低频（半年~1年）维护。替代"会话内逐只人工分析"的全市场扩展。
+
+- **输入**：东财 F10 一次调用取 三级行业EM2016/主营简述/实际控制人/上市日期（fin_store 30天TTL缓存）；提示词静态部分全在 system 消息逐批不变（命中 DeepSeek 上下文缓存，实测输入token命中80%+），变量（股票清单）全在 user 末尾
+- **校验**：模型 key 白名单 + confidence 枚举 + 批内覆盖率，失败单只补跑；批级账本 `classify_batch` 断点续传
+- **金标准**：`--regression` 用 watchlist 人工标注回归（v2026-09-c 一致率 41/46=89.1%，5 个分歧均为灰色地带且全部自动标记 needs_review）
+- **复核流**：置信度low/缺主营/soe/行业先验矛盾 自动 `needs_review=1`（medium 不单独触发）→ `--export-review` 导出CSV人工定夺 → `--import-review` 导入（source=manual，**永不被自动刷新覆盖**）；旗标规则调整后 `--recompute-flags` 重算存量
+- **API 配置**：`artifacts/.cache/ai_credentials.json`（profiles 可切换 deepseek/doubao 等，key 走环境变量 DEEPSEEK_API_KEY，不落盘）；当前 deepseek/deepseek-flash
+- **限流语义**（api-docs.deepseek.com/quick_start/rate_limit）：DeepSeek 为**并发数限制**（deepseek-flash 上限 2500 并发/账号级，非 TPM/RPM），超限 429 无 Retry-After；模块遇 429 做**全局暂停**（所有线程共享，指数退避），concurrency 默认 3 远低于上限
+- **读取接口**：`ai_model_classifier.resolve_model(code)` —— watchlist.txt 手工标注 > DB manual > DB ai/rule
+
+```bash
+python scripts/ai_model_classifier.py --status                # 进度统计
+python scripts/ai_model_classifier.py --all                   # 全市场补缺分类
+python scripts/ai_model_classifier.py --refresh --stale-only  # 半年刷新（超龄/输入变化）
+python scripts/ai_model_classifier.py --codes 600887          # 补跑指定
+python scripts/ai_model_classifier.py --crosscheck            # 规则分类器交叉校验（财报缓存内）
+python scripts/ai_model_classifier.py --export-review / --import-review CSV / --set 600887 staples
+python scripts/ai_model_classifier.py --recompute-flags      # 旗标规则调整后重算存量(不调用AI)
+```
+
+提示词版本 PROMPT_VERSION 与每条结果一同入库（prompt_version 列），改提示词必须升版本；设计与规则清单见 docs/superpowers/plans/2026-09-12-ai-model-classification.md。
+
+## 全市场算分因子输入（2026-09-13 新增，scripts/score_factors.py）
+
+把评分引擎要用的财务因子批量算好存入 `kline_store.db` 的 `score_factors` 表（与 model_classify 同库），全市场扫描可离线打分、规则交叉校验可带财务证据：
+
+| 字段 | 来源 | 用途 |
+|---|---|---|
+| avg_roe / avg_gross_margin / gross_margin_stability / revenue_growth_5y / latest_revenue_yoy / latest_profit_yoy / roe_trend | akshare 全市场预热财报（离线零网络） | bank 的 ROE、staples 的毛利率稳定性、pharma/tech 的增速等因子 |
+| rd_ratio | 东财年报研发费用率（30天TTL缓存，联网） | tech 因子（12.2%权重） |
+| dps_ttm | fin_bonus 滚动365天每股现金分红（div=元/股，与 build_total_return 同口径） | soe/cyclical/bank 的股息率因子输入 |
+| div_yield | dps_ttm / 最新价（kline meta 报价快照） | soe 高股息语义证据（≥4%） |
+
+```bash
+python scripts/score_factors.py --status          # 覆盖率统计 + soe 股息证据统计
+python scripts/score_factors.py --backfill        # 全量回填（断点续传，30天内跳过）
+python scripts/score_factors.py --backfill --offline   # 只算离线部分
+python scripts/score_factors.py --backfill --codes 600887 --force
+```
+
+`--crosscheck`（ai_model_classifier.py）在 score_factors 就绪后自动携带 rd_ratio/div_yield 证据，soe 判定可用真实股息率验证（≥4% 符合语义、ROE<8%微利则否定 soe）。
 
 ## 输出
 
