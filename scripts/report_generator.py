@@ -830,22 +830,19 @@ html {{ scroll-behavior: smooth; }}
   var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
-  var p10 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.10))];
-  var p20 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.20))];
-  var p30 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.30))];
-  var p80 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.80))];
-  var p95 = sortedScores[Math.min(sortedScores.length - 1, Math.floor(sortedScores.length * 0.95))];
-  data.forEach(function(d) {{
-    var c = 0;
-    for (var i = 0; i < sortedScores.length; i++) {{ if (sortedScores[i] <= d.score) c++; }}
-    d._pct = Math.round(c / sortedScores.length * 100);
-  }});
+  var p10 = scoreQuantile(sortedScores, 0.10);
+  var p20 = scoreQuantile(sortedScores, 0.20);
+  var p30 = scoreQuantile(sortedScores, 0.30);
+  var p80 = scoreQuantile(sortedScores, 0.80);
+  var p95 = scoreQuantile(sortedScores, 0.95);
+  var _pctMap = scorePctMap(sortedScores);
+  data.forEach(function(d) {{ d._pct = _pctMap[d.score]; }});
 
-  var chart = echarts.init(el, null, {{ renderer: 'canvas' }});
+  var chart = echarts.init(el, null, {{ renderer: 'canvas', useDirtyRect: true }});
   chart.setOption({{
     animation: false,
     tooltip: {{
-      trigger: 'axis', confine: true,
+      trigger: 'axis', confine: true, transitionDuration: 0,             // 提示框不做动画（悬停更跟手）
       position: function(point, params, dom, rect, size) {{
         var tw = size.contentSize[0], th = size.contentSize[1];
         var cw = size.viewSize[0], ch = size.viewSize[1];
@@ -866,7 +863,7 @@ html {{ scroll-behavior: smooth; }}
         if (y + th > ch) y = ch - th;
         return [x, y];
       }},
-      axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
+      axisPointer: {{ type: 'line', lineStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
         return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: <span style="color:#c0392b;font-weight:700">' + d.close + '</span> 元<br/>收盘价(qfq): ' + (d.close_qfq != null ? d.close_qfq + ' 元' + (d.close_qfq < 0 ? ' <span style="color:#9a6700">（前复权口径：累计分红超过当年股价，故为负）</span>' : '') : '-') + '<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
@@ -942,6 +939,23 @@ html {{ scroll-behavior: smooth; }}
   }}
 }})();
 
+// === 分位工具（一次排序 O(n log n)，替代原逐点 O(n²) 统计：3600² ≈ 1300 万次比较）===
+function scoreQuantile(sortedScores, q) {{
+  var n = sortedScores.length;
+  var i = q >= 1 ? n - 1 : Math.floor(n * q);
+  return sortedScores[Math.max(0, Math.min(n - 1, i))];
+}}
+function scorePctMap(sortedScores) {{
+  var total = sortedScores.length, map = {{}}, cnt = 0;
+  for (var i = 0; i < total; i++) {{
+    cnt++;
+    if (i + 1 === total || sortedScores[i + 1] !== sortedScores[i]) {{
+      map[sortedScores[i]] = Math.round(cnt / total * 100);
+    }}
+  }}
+  return map;
+}}
+
 // === Fullscreen chart ===
 var _fsChart = null;
 window.openFullscreenChart = openFullscreenChart;
@@ -952,7 +966,10 @@ function openFullscreenChart() {{
   overlay.classList.add('active');
   document.body.style.overflow = 'hidden';
   var el = document.getElementById('chart-backtest-fullscreen');
-  if (_fsChart) {{ _fsChart.dispose(); _fsChart = null; }}
+  if (_fsChart) {{          // 复用实例：报告数据在页面生命周期内不变，重建纯属浪费
+    _fsChart.resize();
+    return;
+  }}
   var data = VALUATION_DATA.data;
   var dates = data.map(function(d) {{ return d.date; }});
   var scores = data.map(function(d) {{ return d.score; }});
@@ -960,16 +977,13 @@ function openFullscreenChart() {{
   var peTTMs = data.map(function(d) {{ return d.pe_ttm > 0 ? Math.round(10000 / d.pe_ttm) / 100 : 0; }});
   var marketCaps = data.map(function(d) {{ return d.market_cap; }});
   var sortedScores = scores.slice().sort(function(a,b){{return a-b;}});
-  var p10 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.10))];
-  var p20 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.20))];
-  var p30 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.30))];
-  var p80 = sortedScores[Math.max(0, Math.floor(sortedScores.length * 0.80))];
-  var p95 = sortedScores[Math.min(sortedScores.length - 1, Math.floor(sortedScores.length * 0.95))];
-  data.forEach(function(d) {{
-    var c = 0;
-    for (var i = 0; i < sortedScores.length; i++) {{ if (sortedScores[i] <= d.score) c++; }}
-    d._pct = Math.round(c / sortedScores.length * 100);
-  }});
+  var p10 = scoreQuantile(sortedScores, 0.10);
+  var p20 = scoreQuantile(sortedScores, 0.20);
+  var p30 = scoreQuantile(sortedScores, 0.30);
+  var p80 = scoreQuantile(sortedScores, 0.80);
+  var p95 = scoreQuantile(sortedScores, 0.95);
+  var _pctMap = scorePctMap(sortedScores);
+  data.forEach(function(d) {{ d._pct = _pctMap[d.score]; }});
   var latest = data[data.length - 1];
   try {{ if (document.fullscreenEnabled || document.webkitFullscreenEnabled) {{ var d = document.documentElement; if (d.requestFullscreen) d.requestFullscreen(); else if (d.webkitRequestFullscreen) d.webkitRequestFullscreen(); }} }} catch(e) {{}}
   try {{ if (screen.orientation && screen.orientation.lock) {{ screen.orientation.lock('landscape').catch(function(){{}}); }} }} catch(e) {{}}
@@ -978,12 +992,12 @@ function openFullscreenChart() {{
     if (window.innerWidth < window.innerHeight && window.screen.width < 768) {{ hint.classList.add('active'); }}
     else {{ hint.classList.remove('active'); }}
   }}
-  _fsChart = echarts.init(el, null, {{ renderer: 'canvas' }});
+  _fsChart = echarts.init(el, null, {{ renderer: 'canvas', useDirtyRect: true }});
   _fsChart.setOption({{
     backgroundColor: '#0a0e17',
     animation: false,
     tooltip: {{
-      trigger: 'axis', confine: true,
+      trigger: 'axis', confine: true, transitionDuration: 0,             // 提示框不做动画（悬停更跟手）
       position: function(point, params, dom, rect, size) {{
         var tw = size.contentSize[0], th = size.contentSize[1];
         var cw = size.viewSize[0], ch = size.viewSize[1];
@@ -1007,7 +1021,7 @@ function openFullscreenChart() {{
       backgroundColor: 'rgba(10,14,23,0.95)',
       borderColor: '#1a2332',
       textStyle: {{ color: '#e5e7eb', fontSize: 12 }},
-      axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
+      axisPointer: {{ type: 'line', lineStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
         return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: <span style="color:#f87171;font-weight:700">' + d.close + '</span> 元<br/>收盘价(qfq): ' + (d.close_qfq != null ? d.close_qfq + ' 元' + (d.close_qfq < 0 ? ' <span style="color:#9a6700">（前复权口径：累计分红超过当年股价，故为负）</span>' : '') : '-') + '<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
@@ -1065,7 +1079,7 @@ function closeFullscreenChart() {{
   var overlay = document.getElementById('chartOverlay');
   overlay.classList.remove('active');
   document.body.style.overflow = '';
-  if (_fsChart) {{ _fsChart.dispose(); _fsChart = null; }}
+  // 保留 _fsChart 实例（不 dispose）：再次打开只需 resize，避免重建 3600 点图表
   var hint = document.getElementById('fsOrientHint');
   if (hint) hint.classList.remove('active');
   try {{ if (document.fullscreenElement || document.webkitFullscreenElement) {{ if (document.exitFullscreen) document.exitFullscreen(); else if (document.webkitExitFullscreen) document.webkitExitFullscreen(); }} }} catch(e) {{}}
