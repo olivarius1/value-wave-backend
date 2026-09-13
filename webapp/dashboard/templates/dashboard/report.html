@@ -1,0 +1,97 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}报告浏览 · A股估值控制台{% endblock %}
+{% block navreport %}active{% endblock %}
+{% block content %}
+<div class="report-layout">
+  <div class="report-toolbar">
+    <input type="text" id="code" placeholder="股票代码，如 600887" size="18" autocomplete="off">
+    <button class="primary" id="btn-view">查看报告</button>
+    <select id="model">
+      <option value="">自动检测（watchlist人工 &gt; AI分类）</option>
+      {% for value, label in model_choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+    </select>
+    <button id="btn-build">生成/更新报告</button>
+    <span id="meta" class="meta"></span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="build-state" class="meta"></span>
+  </div>
+  <div class="report-body">
+    <div id="empty" class="empty-tip" style="display:none">
+      <p>该股票还没有估值报告。</p>
+      <p>选择模型后点击「生成/更新报告」，生成完成后自动展示。</p>
+    </div>
+    <iframe id="frame" style="display:none" title="估值报告"></iframe>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const params = new URLSearchParams(location.search);
+let buildJobId = null;
+
+async function loadReport(code) {
+  const r = await api.get('/api/report/status/?code=' + encodeURIComponent(code));
+  if (r.error) { $('#meta').textContent = r.error; return; }
+  const m = r.meta || {};
+  $('#meta').innerHTML =
+    `<b>${api.esc(r.name)}</b>(${api.esc(r.code)})` +
+    ` · 模型 ${api.esc(r.model_label || r.model || '未归属')}${r.model_source === 'ai' ? '(AI)' : ''}` +
+    (m.score != null ? ` · 当前分 <b>${m.score}</b>` : '') +
+    (m.price ? ` · 现价 ${m.price}` : '') +
+    (m.weights ? ` · ${api.esc(m.weights)}` : '') +
+    (m.data_last_date ? ` · 数据至 ${m.data_last_date}` : '');
+  if (r.report) {
+    $('#empty').style.display = 'none';
+    $('#frame').style.display = '';
+    $('#frame').src = `/report/frame/${code}/?t=${Date.now()}`;
+  } else {
+    $('#frame').style.display = 'none';
+    $('#frame').src = 'about:blank';
+    $('#empty').style.display = '';
+  }
+  if (r.model) $('#model').value = r.model;
+}
+
+$('#btn-view').addEventListener('click', () => {
+  const code = $('#code').value.trim();
+  if (!/^\d{6}$/.test(code)) { $('#meta').textContent = '请输入6位股票代码'; return; }
+  history.replaceState(null, '', '/report/?code=' + code);
+  loadReport(code);
+});
+$('#code').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btn-view').click(); });
+
+$('#btn-build').addEventListener('click', async () => {
+  const code = $('#code').value.trim();
+  if (!/^\d{6}$/.test(code)) { $('#meta').textContent = '请输入6位股票代码'; return; }
+  const model = $('#model').value || 'auto';   // 空 = 自动检测（watchlist人工 > AI分类）
+  const r = await api.post('/api/jobs/create/', {kind: 'build_report', code, model});
+  if (r.status !== 200) { $('#build-state').textContent = r.data.error || '入队失败'; return; }
+  buildJobId = r.data.job_id;
+  $('#build-state').innerHTML = `<span class="spin">⏳</span> ${r.data.created ? '已入队' : '任务进行中'}: #${buildJobId}`;
+});
+
+setInterval(async () => {
+  const data = await api.get('/api/jobs/');
+  jobDot(data);
+  if (!buildJobId) return;
+  const j = data.jobs.find(x => x.id === buildJobId);
+  if (!j) return;
+  if (j.status === 'running') {
+    $('#build-state').innerHTML = `<span class="spin">⏳</span> 生成中 ${j.total ? j.progress + '/' + j.total : ''} ${api.esc(j.message || '')}`;
+  } else if (j.status === 'done') {
+    $('#build-state').textContent = '✅ 报告已生成';
+    buildJobId = null;
+    loadReport($('#code').value.trim());
+  } else if (j.status === 'failed' || j.status === 'canceled') {
+    $('#build-state').textContent = `❌ ${j.status === 'canceled' ? '已取消' : '失败'}: ${j.message}`;
+    buildJobId = null;
+  }
+}, 1500);
+
+const initial = params.get('code');
+if (initial && /^\d{6}$/.test(initial)) {
+  $('#code').value = initial;
+  loadReport(initial);
+}
+</script>
+{% endblock %}

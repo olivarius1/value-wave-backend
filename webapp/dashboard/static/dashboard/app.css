@@ -1,0 +1,153 @@
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --border: #e3e6ea;
+  --text: #24292f;
+  --muted: #6a737d;
+  --accent: #0969da;
+  --accent-soft: #ddf4ff;
+  --green: #1a7f37;
+  --red: #cf222e;
+  --warn: #9a6700;
+  --radius: 10px;
+  --mono: "SF Mono", ui-monospace, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--text);
+}
+a { color: var(--accent); text-decoration: none; }
+
+/* ---------- 顶栏 ---------- */
+.topbar {
+  background: #1f2328; color: #f0f3f6;
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 20px; height: 48px; position: sticky; top: 0; z-index: 10;
+}
+.topbar .brand { font-weight: 700; margin-right: 20px; letter-spacing: .5px; }
+.topbar a.nav {
+  color: #b8bfc7; padding: 4px 12px; border-radius: 6px; margin-right: 4px;
+}
+.topbar a.nav:hover { color: #fff; background: #30363d; }
+.topbar a.nav.active { color: #fff; background: #0969da; }
+.topbar .spacer { flex: 1; }
+.topbar .job-dot { font-size: 12px; color: #b8bfc7; }
+.topbar .job-dot .dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: #6a737d; margin-right: 6px; vertical-align: 1px;
+}
+.topbar .job-dot.busy .dot { background: #f2cc60; animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px; }
+
+/* ---------- 卡片 ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; }
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.card h3 { margin: 0 0 10px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+.card h3 .actions { margin-left: auto; display: flex; gap: 6px; }
+.kv { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; font-size: 13px; }
+.kv .k { color: var(--muted); }
+.kv .v { text-align: right; font-family: var(--mono); }
+.v.good { color: var(--green); }
+.v.bad { color: var(--red); }
+.v.warn { color: var(--warn); }
+
+/* ---------- 控件 ---------- */
+button, .btn {
+  border: 1px solid var(--border); background: #f6f8fa; color: var(--text);
+  border-radius: 6px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+  white-space: nowrap;
+}
+button:hover { background: #eef1f4; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: #0757ba; }
+button.danger { color: var(--red); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input[type=text], select {
+  border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 14px;
+}
+#group-dd-btn { font-weight: 600; }
+input[type=text]:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+/* ---------- 表格 ---------- */
+table.grid { width: 100%; border-collapse: collapse; background: var(--card); font-size: 13px; }
+table.grid th, table.grid td {
+  border-bottom: 1px solid var(--border); padding: 7px 10px; text-align: left; white-space: nowrap;
+}
+table.grid th {
+  color: var(--muted); font-weight: 600; background: #fafbfc;
+}
+table.grid th.sortable { cursor: pointer; }
+table.grid th.sortable:hover { color: var(--text); }
+table.grid tbody tr:hover { background: #f6f9ff; }
+table.grid tbody tr.clickable { cursor: pointer; }
+.num { font-family: var(--mono); text-align: right !important; }
+.score-hi { color: var(--green); font-weight: 700; }
+.score-lo { color: var(--red); font-weight: 700; }
+.tag {
+  display: inline-block; padding: 0 8px; border-radius: 10px; font-size: 12px;
+  background: #eef1f4; color: var(--muted);
+}
+.tag.wl { background: #ddf4ff; color: #0550ae; }
+
+/* ---------- 任务面板 ---------- */
+.progressbar { height: 8px; background: #e7eaee; border-radius: 4px; overflow: hidden; }
+.progressbar > div { height: 100%; background: var(--accent); transition: width .4s; }
+.joblog {
+  background: #0d1117; color: #c9d1d9; font-family: var(--mono); font-size: 12px;
+  border-radius: 8px; padding: 10px 12px; height: 180px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+.joblist { font-size: 12.5px; }
+.status-pill { padding: 1px 8px; border-radius: 9px; font-size: 12px; }
+.st-done { background: #dafbe1; color: var(--green); }
+.st-running { background: #fff8c5; color: var(--warn); }
+.st-pending { background: #eef1f4; color: var(--muted); }
+.st-failed { background: #ffebe9; color: var(--red); }
+.st-canceled { background: #eef1f4; color: var(--muted); }
+
+/* ---------- 标签页 ---------- */
+.tabs { display: flex; gap: 6px; margin-bottom: 0; }
+.tabs .tab {
+  padding: 8px 18px; border: 1px solid var(--border); border-bottom: none;
+  background: #eef0f3; border-radius: 8px 8px 0 0; cursor: pointer; color: var(--muted);
+}
+.tabs .tab.active { background: var(--card); color: var(--text); font-weight: 600; }
+.tabpane { display: none; }
+.tabpane.active { display: block; }
+
+/* ---------- 报告页 ---------- */
+.report-layout { display: flex; flex-direction: column; height: calc(100vh - 48px); }
+.report-toolbar {
+  background: var(--card); border-bottom: 1px solid var(--border);
+  padding: 10px 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.report-toolbar .meta { color: var(--muted); font-size: 13px; }
+.report-body { flex: 1; position: relative; }
+.report-body iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.empty-tip { color: var(--muted); text-align: center; padding: 60px 0; }
+
+.muted { color: var(--muted); white-space: nowrap; }
+
+/* ---------- 自定义下拉（原生select弹出定位不可控） ---------- */
+.dropdown { position: relative; }
+.dropdown-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 60;
+  background: #fff; border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.15); min-width: 150px; padding: 4px;
+}
+.dd-item {
+  padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  white-space: nowrap; font-size: 13.5px;
+}
+.dd-item:hover { background: var(--accent-soft); }
+.dd-item.active { background: var(--accent); color: #fff; }
+.mt { margin-top: 14px; }
+.flex { display: flex; gap: 8px; align-items: center; }
+.spin { display: inline-block; animation: pulse 1s infinite; }

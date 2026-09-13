@@ -1,13 +1,18 @@
 # A股估值报告生成工具
 
-纯算法驱动的A股估值分析工具，自动获取腾讯财经10年K线 + 同花顺iFinD财务报表数据（东财兜底），生成自包含HTML估值回测报告。
+纯算法驱动的A股估值分析工具，自动获取腾讯财经K线（20年主序列，报告窗口按最近15年切片） + 同花顺iFinD财务报表数据（东财兜底），生成自包含HTML估值回测报告。
 
 **无需部署后端服务、无需数据库、无需AI，本地 Python 即可运行。**
+
+> **Web 控制台（推荐入口）**：`bash webapp/start.sh` → http://127.0.0.1:8642/
+> 数据管理（新鲜度总览 + 更新按钮 + 单股更新）/ 分数面板（高分·低分双tab）/ 报告浏览，
+> 数据抓取与报告生成全部页面按钮化，详见 `webapp/README.md`。命令行用法见下文。
 
 ## 环境要求
 
 - Python 3.6+ 
 - 网络访问（腾讯财经 + iFinD 数据接口，需 `artifacts/.cache/ths_credentials.json` 凭证）
+- Web 控制台另需：`pip install --user django`（6.x）
 
 ## 快速开始
 
@@ -54,7 +59,7 @@ python scripts/build_report.py 601919 --model soe --dps 1.00
 
 ## K线缓存与增量更新
 
-- **首次运行**：全量获取10年K线（~30秒），缓存到 `artifacts/.cache/`
+- **首次运行**：全量获取20年K线（缓存到 `artifacts/.cache/`），报告/评分按最近15年切片使用
 - **同日重复运行**：直接使用缓存，0次API调用
 - **次日运行**：仅增量获取新数据（1次API调用，~2秒）
 - `--no-cache`：强制全量刷新
@@ -132,7 +137,7 @@ python scripts/batch_rebuild.py --retry
 
 | 数据 | API | 说明 |
 |------|-----|------|
-| K线 | 腾讯财经 `web.ifzq.gtimg.cn`（故障自动切备用域名） | 后复权日K（收益/MA口径，恒正），自动分批获取；PE/PB 用不复权真实价 |
+| K线 | 腾讯财经 `web.ifzq.gtimg.cn`（故障自动切备用域名） | 评分用后复权日K（收益/MA口径，恒正）；报告展示与 PE/PB 用不复权真实价；前复权价由分红送转事件离线递推（提示框对照展示） |
 | 财务报表 | 同花顺 iFinD `ths_*_pit_stock` PIT时点指标（主源） | 年报/半年报/季报核心指标，PIT口径 |
 | 财务报表（兜底） | 东方财富 `datacenter.eastmoney.com` | iFinD 失败时自动降级，带截断防护 |
 

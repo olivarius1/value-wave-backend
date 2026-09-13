@@ -1,0 +1,262 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}数据管理 · A股估值控制台{% endblock %}
+{% block navdata %}active{% endblock %}
+{% block content %}
+<div class="wrap">
+  <h2 style="margin:4px 0 12px">数据管理</h2>
+
+  <!-- 状态卡片 -->
+  <div class="cards" id="cards">
+    <div class="card" id="card-kline">
+      <h3>全市场K线
+        <span class="actions">
+          <button data-kind="kline_all" class="primary" title="落后账本重置为待抓取后增量拉取（断点续传）">增量更新全市场</button>
+          <button data-kind="build_list" title="仅重建股票名单（stock_basic），不更新K线/财务数据"
+                  data-confirm="重建股票列表：重新拉取沪深A股名单并整体覆盖 stock_basic（约5500只，不含北交所/B股）。确认执行？">重建股票列表</button>
+        </span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+    <div class="card" id="card-fin">
+      <h3>财务数据
+        <span class="actions">
+          <button data-kind="fin_bulk" class="primary">业绩报表批量</button>
+          <button data-kind="fin_gap">缺口补齐</button>
+          <button data-kind="fin_industry" title="行业链(EM2016三级)+总股本">行业+股本</button>
+        </span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+    <div class="card" id="card-classify">
+      <h3>AI模型分类
+        <span class="actions"><button data-kind="ai_classify" class="primary">分类增量（缺分类）</button></span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+    <div class="card" id="card-factors">
+      <h3>算分因子
+        <span class="actions"><button data-kind="factors" class="primary">因子回填</button></span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+    <div class="card" id="card-bonus">
+      <h3>分红送转事件
+        <span class="actions"><button data-kind="bonus_warmup" class="primary">事件预热</button></span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+    <div class="card" id="card-report">
+      <h3>估值报告
+        <span class="actions">
+          <button data-kind="reports_rebuild" title="按 watchlist 逐只重建报告（含分数/价格/市值刷新）"
+                  data-confirm="将按 watchlist 逐只重建估值报告并覆盖现有报告文件（约 46 只，需 10 分钟左右）。确认执行？">批量重建报告</button>
+        </span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
+  </div>
+
+  <!-- 单股更新 -->
+  <div class="card mt">
+    <h3>单股数据更新
+      <span class="actions muted" style="font-weight:400">输入6位代码或名称关键字，搜索后可更新该股 K线 / 财务 / 因子 / 评分 / 报告</span>
+    </h3>
+    <div class="flex">
+      <input type="text" id="q" placeholder="如 600887 或 伊利" size="28" autocomplete="off">
+      <span id="q-hint" class="muted"></span>
+    </div>
+    <div id="search-results" class="mt" style="max-height:320px;overflow:auto"></div>
+  </div>
+
+  <!-- 后台任务 -->
+  <div class="card mt">
+    <h3>后台任务
+      <span class="actions muted" id="active-label" style="font-weight:400"></span>
+    </h3>
+    <div id="active-box" style="display:none">
+      <div class="flex" style="margin-bottom:6px">
+        <div class="progressbar" style="flex:1"><div id="active-bar" style="width:0%"></div></div>
+        <span id="active-progress" class="muted" style="font-family:var(--mono);font-size:12px"></span>
+        <button class="danger" id="btn-cancel">取消</button>
+      </div>
+      <div class="joblog" id="active-log"></div>
+    </div>
+    <table class="grid joblist mt">
+      <thead><tr><th>#</th><th>任务</th><th>状态</th><th>进度</th><th>信息</th><th>创建</th><th>结束</th><th></th></tr></thead>
+      <tbody id="job-rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let lastActiveState = null;   // 用于活动任务结束瞬间触发状态刷新
+
+function kv(id, pairs) {
+  const el = $(id + ' [data-kv]');
+  el.innerHTML = pairs.map(([k, v, cls]) =>
+    `<span class="k">${api.esc(k)}</span><span class="v ${cls || ''}">${v}</span>`).join('');
+}
+function ago(n, unit = '天') {
+  return n == null ? '—' : (n === 0 ? '今日' : `${n}${unit}前`);
+}
+
+function renderStatus(st) {
+  const k = st.kline;
+  kv('#card-kline', [
+    ['上市A股', k.listed],
+    ['已有K线', k.covered, k.no_data ? 'warn' : 'good'],
+    ['未获取', k.no_data, k.no_data ? 'bad' : 'good'],
+    ['落后于最新交易日', k.stale ? `${k.stale} 只` : '0 只', k.stale ? 'warn' : 'good'],
+    ['最新交易日', k.latest_trading_day || '—'],
+    ['批量更新于', `${k.last_updated || '—'} (${ago(k.last_updated_ago)})`],
+    ['账本失败', k.ledger_failed, k.ledger_failed ? 'bad' : 'good'],
+  ]);
+  const f = st.finance;
+  kv('#card-fin', [
+    ['财报覆盖', `${f.reports.covered} 只 (库内 ${f.reports.have_data})`],
+    ['30天内新鲜', f.reports.fresh, f.reports.covered - f.reports.fresh ? 'warn' : 'good'],
+    ['财报最近获取', `${f.reports.last || '—'} (${ago(f.reports.last_ago)})`],
+    ['每股指标', `${f.pershare.covered} / 新鲜 ${f.pershare.fresh}`],
+    ['分红送转', `${f.bonus.covered} / 新鲜 ${f.bonus.fresh}`],
+    ['行业链', `${f.industry.covered} / 新鲜 ${f.industry.fresh}`],
+    ['报告期批量', `yjbb 完成 ${f.yjbb_done} 期 / 失败 ${f.yjbb_failed}`],
+    ['账本失败', f.ledger_failed, f.ledger_failed ? 'bad' : 'good'],
+  ]);
+  const c = st.classify;
+  kv('#card-classify', [
+    ['已分类', c.covered],
+    ['待人工复核', c.needs_review, c.needs_review ? 'warn' : 'good'],
+    ['最近分类时间', `${c.last_classified || '—'} (${ago(c.last_ago)})`],
+    ['最近批次', c.last_batch ? `${c.last_batch.status} @ ${c.last_batch.finished_at || ''}` : '—'],
+  ]);
+  const fa = st.factors;
+  kv('#card-factors', [
+    ['已回填', fa.covered],
+    ['超30天未刷新', fa.stale, fa.stale ? 'warn' : 'good'],
+    ['最近回填', `${fa.last || '—'} (${ago(fa.last_ago)})`],
+  ]);
+  const b = st.finance.bonus;
+  kv('#card-bonus', [
+    ['有事件数据', b.covered],
+    ['30天内新鲜', b.fresh, b.covered - b.fresh ? 'warn' : 'good'],
+  ]);
+  kv('#card-report', [
+    ['报告文件', `${st.reports.count} 份`],
+    ['最近生成', st.reports.latest || '—'],
+    ['距今天数', st.reports.latest_ago_days == null ? '—' : `${st.reports.latest_ago_days} 天`],
+  ]);
+}
+
+// ---- 单股搜索 ----
+let qTimer = null;
+$('#q').addEventListener('input', () => {
+  clearTimeout(qTimer);
+  qTimer = setTimeout(runSearch, 300);
+});
+async function runSearch() {
+  const q = $('#q').value.trim();
+  if (!q) { $('#search-results').innerHTML = ''; return; }
+  const {results} = await api.get('/api/search/?q=' + encodeURIComponent(q));
+  $('#q-hint').textContent = `${results.length} 条`;
+  $('#search-results').innerHTML = results.length ? `
+    <table class="grid"><thead><tr>
+      <th>代码</th><th>名称</th><th>模型</th><th>K线至</th><th>财报更新</th><th>分数</th><th style="width:190px">操作</th>
+    </tr></thead><tbody>
+    ${results.map(r => `
+      <tr>
+        <td class="num">${api.esc(r.code)}</td>
+        <td>${api.esc(r.name)} ${r.in_watchlist ? '<span class="tag wl">watchlist</span>' : ''}</td>
+        <td>${api.esc(r.model || '—')}${r.model_source === 'ai' ? ' <span class="muted">(AI)</span>' : ''}</td>
+        <td class="num">${api.esc(r.kline_last_date || '无')}</td>
+        <td class="num">${api.esc(r.fin_reports_updated || '无')}</td>
+        <td class="num">${r.score == null ? '—' : r.score}</td>
+        <td>
+          <button class="primary" onclick="stockUpdate('${r.code}')">更新数据</button>
+          <a class="btn" href="/report/?code=${r.code}" target="_blank">报告</a>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>` : '<div class="empty-tip">没有匹配的股票</div>';
+}
+async function stockUpdate(code) {
+  const r = await api.post('/api/jobs/create/', {kind: 'stock_update', code});
+  toast(r.data.created ? `已入队: ${r.data.label}` : `任务已在队列中: ${r.data.label}`);
+  pollJobs();
+}
+
+// ---- 后台任务轮询 ----
+async function pollJobs() {
+  const data = await api.get('/api/jobs/');
+  jobDot(data);
+  const a = data.active;
+  const box = $('#active-box');
+  if (a) {
+    box.style.display = '';
+    $('#active-label').textContent = `当前: #${a.id} ${a.label}`;
+    const pct = a.total ? Math.round(a.progress / a.total * 100) : 0;
+    $('#active-bar').style.width = pct + '%';
+    $('#active-progress').textContent = a.total ? `${a.progress}/${a.total} (${pct}%)` : '...';
+    $('#active-log').textContent = (a.tail || []).join('\n');
+    $('#active-log').scrollTop = $('#active-log').scrollHeight;
+  } else {
+    box.style.display = 'none';
+    $('#active-label').textContent = '';
+  }
+  $('#job-rows').innerHTML = data.jobs.map(j => `
+    <tr>
+      <td class="num">${j.id}</td>
+      <td>${api.esc(j.label)}</td>
+      <td><span class="status-pill st-${j.status}">${{pending:'排队',running:'运行中',done:'完成',failed:'失败',canceled:'已取消'}[j.status]}</span></td>
+      <td class="num">${j.total ? `${j.progress}/${j.total}` : '—'}</td>
+      <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${api.esc(j.message)}">${api.esc(j.message)}</td>
+      <td class="num">${j.created_at}</td>
+      <td class="num">${j.finished_at || '—'}</td>
+      <td>${j.status === 'running' ? `<button class="danger" onclick="cancelJob(${j.id})">取消</button>` : ''}</td>
+    </tr>`).join('');
+  // 活动任务刚结束 → 刷新状态卡
+  const key = a ? `run-${a.id}` : 'idle';
+  if (lastActiveState && lastActiveState.startsWith('run-') && key === 'idle') loadStatus();
+  lastActiveState = key;
+}
+$('#btn-cancel').addEventListener('click', async () => {
+  const data = await api.get('/api/jobs/');
+  if (data.active) await api.post(`/api/jobs/${data.active.id}/cancel/`);
+  pollJobs();
+});
+window.cancelJob = async (id) => { await api.post(`/api/jobs/${id}/cancel/`); pollJobs(); };
+
+// ---- 卡片按钮 → 入队（带 data-confirm 的重建类按钮需二次确认，增量类直接执行） ----
+document.querySelectorAll('#cards button[data-kind]').forEach(b =>
+  b.addEventListener('click', async () => {
+    if (b.dataset.confirm && !window.confirm(b.dataset.confirm)) return;
+    const r = await api.post('/api/jobs/create/', {kind: b.dataset.kind});
+    toast(r.status === 200
+      ? (r.data.created ? `已入队: ${r.data.label}` : `任务已在队列中: ${r.data.label}`)
+      : (r.data.error || '入队失败'));
+    pollJobs();
+  }));
+
+let toastTimer = null;
+function toast(msg) {
+  let el = $('#toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.style.cssText = 'position:fixed;right:20px;top:60px;z-index:99;background:#24292f;color:#fff;' +
+      'padding:10px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,.2);transition:opacity .3s';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg; el.style.opacity = 1;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.style.opacity = 0, 2600);
+}
+
+async function loadStatus() {
+  try { renderStatus(await api.get('/api/status/')); } catch (e) {}
+}
+loadStatus();
+pollJobs();
+setInterval(pollJobs, 1500);
+setInterval(loadStatus, 8000);
+</script>
+{% endblock %}

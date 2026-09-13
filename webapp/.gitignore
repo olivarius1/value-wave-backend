@@ -1,0 +1,4 @@
+# Web 控制台运行时产物（不入库）
+db.sqlite3
+__pycache__/
+*.pyc

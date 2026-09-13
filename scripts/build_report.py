@@ -4,6 +4,7 @@
 用法: python build_report.py 600887 --model staples [--pe MIN MAX] [--pb MIN MAX] [--digest-growth 0.6]
 """
 import os
+import re
 import sys
 import datetime
 import json
@@ -32,6 +33,55 @@ def _load_prev_meta(stock_name, stock_code):
             return json.load(f).get('meta') or {}
     except (OSError, ValueError):
         return {}
+
+
+REPORT_YEARS = 15   # 报告窗口年数（从20年主序列切片；K线/财务不足则按实际可得天数）
+
+
+def _slice_years(rows, years=REPORT_YEARS):
+    """按报告窗口切片（20年主序列 → 最近 REPORT_YEARS 年）"""
+    if not rows:
+        return rows
+    boundary = (datetime.date.today() - datetime.timedelta(days=years * 365)).isoformat()
+    return [r for r in rows if r[0] >= boundary] or rows
+
+
+def _clean_name(name, code):
+    """报告用股票名清洗：除权除息日腾讯行情名会带 XD/XR/DR 前缀（如 中国平安→XD中国平，
+    且被截断成 4 字），会导致报告文件名漂移、新旧报告重影。watchlist 有人工维护名时优先，
+    否则剥离 XD/XR/DR 前缀。"""
+    try:
+        with open(os.path.join(os.path.dirname(_SCRIPT_DIR), 'watchlist.txt'), encoding='utf-8') as f:
+            for line in f:
+                p = [x.strip() for x in line.strip().split(',')]
+                if len(p) >= 3 and p[1] == code and p[0]:
+                    return p[0]
+    except OSError:
+        pass
+    return re.sub(r'^(XD|XR|DR)+', '', name or '') or name
+
+
+def build_qfq_series(raw_kline, bonus_events):
+    """前复权收盘价序列（除权除息口径，与腾讯/同花顺一致）——报告悬浮提示展示用。
+
+    倒序递推：每个除权除息事件更新 K←K×(1+送转)+每股分红, F←F×(1+送转)，
+    事件之后（更早）的日期 qfq=(raw−K)/F。
+    验证：601888 2016-09-19 得 15.105（腾讯同值）；600887/601888 与腾讯逐日最大差 0.0000。
+    """
+    if not raw_kline:
+        return {}
+    events = sorted(bonus_events or [], key=lambda e: e['date'])
+    out, K, F, ei = {}, 0.0, 1.0, len(events) - 1
+    for row in sorted(raw_kline, key=lambda r: r[0], reverse=True):
+        d = row[0]
+        while ei >= 0 and events[ei]['date'] > d:
+            K = K * (1 + events[ei]['ratio']) + events[ei]['div']
+            F *= (1 + events[ei]['ratio'])
+            ei -= 1
+        close = float(row[2])
+        if close > 0:
+            out[d] = round((close - K) / F, 4)
+    return out
 
 
 def _run_new_format():
@@ -78,16 +128,16 @@ def _run_new_format():
 
     print(f"=== {stock_code} 估值报告生成 ===")
 
-    # 1. 获取K线数据（带缓存+增量）
+    # 1. 获取K线数据（20年主序列，按报告窗口 REPORT_YEARS 年切片）
     from kline_cache import get_kline, get_kline_raw
-    kline_result = get_kline(stock_code, exchange, no_cache=args.no_cache, fq='hfq')
-    kline_data = kline_result['kline']
+    kline_result = get_kline(stock_code, exchange, no_cache=args.no_cache, fq='hfq', years=20)
+    kline_data = _slice_years(kline_result['kline'])
     # 不复权真实价K线（历史 PE/PB 必须用当日真实交易价；前复权价会随最新除权整体缩放导致失真）
-    raw_kline = get_kline_raw(stock_code, exchange, no_cache=args.no_cache)
+    raw_kline = _slice_years(get_kline_raw(stock_code, exchange, no_cache=args.no_cache, years=20))
     qt_pe = kline_result['pe']
     qt_pb = kline_result['pb']
     qt_price = kline_result['price']
-    stock_name = args.name or kline_result['name'] or stock_code
+    stock_name = args.name or _clean_name(kline_result['name'], stock_code) or stock_code
     # NFKC 规范化：接口返回的全角字母/数字（如 粤电力Ａ）转半角，保证报告文件名与 watchlist 名称一致
     stock_name = unicodedata.normalize('NFKC', stock_name).strip()
 
@@ -179,6 +229,9 @@ def _run_new_format():
         _n_div = len(bonus_events) - _n_split
         print(f"  [auto] EPS/BPS 逐日重述: {len(adj_series['eps'])}天"
               f" | 送转{_n_split}次 派息{_n_div}次")
+    # 3c. 前复权展示价（除权除息口径，与腾讯/同花顺一致）——报告提示框展示用
+    qfq_close = build_qfq_series(raw_kline, bonus_events)
+    print(f"  [auto] 前复权展示序列: {len(qfq_close)}天（最新 {qfq_close.get(raw_kline[-1][0]) if raw_kline else '-'}）")
 
     # 计算PE/PB区间：命令行手动指定（线性映射逃生阀）> 自动10th/90th百分位（rank映射）；
     # 盈利换挡导致的区间失真由 detect_regime_window 窗口机制处理，不再需要人工校准区间
@@ -222,7 +275,7 @@ def _run_new_format():
             print(f"  [auto] 股息率 = {optional_factors['dividend_yield']:.2%} (DPS {args.dps:.2f}元 / 现价 {qt_price:.2f}元，历史逐日动态)")
 
     # 5. 构建配置并调用报告生成器
-    subtitle = args.subtitle or f"{stock_name}估值框架与10年回测"
+    subtitle = args.subtitle or f"{stock_name}估值框架与{REPORT_YEARS}年回测"
 
     # 参数来源标记：写入 meta.param_source；pe/pb 仅溯源展示（manual=当次命令行指定），不再参与下次恢复
     param_source = {
@@ -271,6 +324,7 @@ def _run_new_format():
         'adj_series': adj_series,
         'financial_reports': reports,  # 年报序列透传（盈利换挡检测用，避免 report_generator 重复拉取）
         'digest_growth': args.digest_growth,
+        'qfq_close': qfq_close,        # 前复权展示价 {date: price}（提示框用，与腾讯/同花顺口径一致）
     }
 
     # 通过全局变量传递config，exec report_generator.py

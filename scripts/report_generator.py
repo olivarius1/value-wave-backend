@@ -126,7 +126,7 @@ WEIGHTS_DISPLAY = build_weights_display(active_weights)
 # 支持三种模式：
 # 1. 缓存模式：build_report.py 已通过 kline_cache 获取数据
 # 2. JSON文件模式：直接传入K线JSON文件
-# 3. 10年自动获取模式：未传K线文件时自动拉取10年数据
+# 3. 自动获取模式：未传K线文件时自动拉取15年数据
 
 full_code = EXCHANGE + STOCK_CODE
 all_kline = []
@@ -149,8 +149,8 @@ else:
     if not KLINE_FILES:
         try:
             from financial_fetcher import fetch_kline_batches, generate_kline_batches
-            print(f"  未提供K线文件，自动获取最近10年K线数据...")
-            _batches = generate_kline_batches(STOCK_CODE, EXCHANGE, years=10)
+            print(f"  未提供K线文件，自动获取最近15年K线数据...")
+            _batches = generate_kline_batches(STOCK_CODE, EXCHANGE, years=15)
             _tmp_dir = os.path.join(_ARTIFACTS, '.cache')
             os.makedirs(_tmp_dir, exist_ok=True)
             _kline_files = fetch_kline_batches(STOCK_CODE, EXCHANGE, _batches, _tmp_dir)
@@ -224,8 +224,8 @@ _raw_close_map = {r[0]: float(r[2]) for r in _raw_kline_data} if _raw_kline_data
 
 # ===== 盈利换挡窗口（自动检测，替代旧的人工区间校准 MANUAL_RANGES）=====
 # 年报净利润序列 {归属年: 归母净利润亿元}：净利润总额不受送转稀释影响，直接用归属年。
-# 只取最近 10 个年报——与报告 PE 分位的 10 年窗口口径对齐（2026-09 财报起点扩至 2005 后，
-# 若用全历史做 5 年分段会把段划分前移 10 年，窗口判定整体漂移）。
+# 只取最近 10 个年报——保持换挡检测的固定口径（不随报告窗口 15 年一起放大，
+# 避免用全历史做 5 年分段把段划分前移、窗口判定整体漂移）。
 # 检测到向上换挡时 PE 分位只用换挡生效后的子序列（引擎内对齐年报披露时点）；
 # 向下回落/亏损段/历史不足只标注不切窗，PB 与其余因子维持全历史
 _annuals_sorted = sorted(
@@ -257,6 +257,31 @@ _score_params = {
 }
 _regime_info = {}
 results = compute_daily_scores(kline, active_weights, factor_values, _score_params, regime_info_out=_regime_info)
+
+# 展示价格统一为真实成交价（不复权/前复权，最新日即实际价）：
+# 评分与 MA/量/波动仍用后复权 kline（上一行已算完，不受影响），但报告里展示的"收盘价"、
+# 总市值必须与 PE/PB、券商行情一致——后复权价与真实价口径的 PE/PB 同框会自相矛盾
+# （如中国中免后复权 123.23 vs 实际 51.67，而 PE 是按 51.67 算的）。
+# 缺失真实价的日期保留原值（盘中虚拟点追加的实时价本就是真实价）。
+if _raw_close_map:
+    _price_fixed = 0
+    for _r in results:
+        _rc = _raw_close_map.get(_r['date'])
+        if _rc and _rc > 0:
+            _r['close'] = round(_rc, 2)
+            if TOTAL_SHARES:
+                _r['market_cap'] = round(_rc * TOTAL_SHARES, 2)
+            _price_fixed += 1
+    print(f"  [auto] 展示价格统一为真实价: {_price_fixed}/{len(results)} 天")
+
+# 前复权展示价（除权除息口径，与腾讯/同花顺一致）：仅用于提示框对照展示，
+# 不参与评分/PE/PB 计算（那条线用真实价，两口径在提示框里并列区分）
+_qfq_map = _cfg.get('qfq_close') or {}
+if _qfq_map:
+    for _r in results:
+        _q = _qfq_map.get(_r['date'])
+        if _q:
+            _r['close_qfq'] = round(_q, 2)
 
 scores = [r['score'] for r in results]
 print(f"  评分: 均值{sum(scores)/len(scores):.1f} 最低{min(scores):.1f} 最高{max(scores):.1f} 最新{scores[-1]:.1f}")
@@ -615,7 +640,7 @@ html {{ scroll-behavior: smooth; }}
 <header class="report-header">
   <div class="subtitle">A股估值系统设计</div>
   <h1>{STOCK_NAME}（{STOCK_CODE}）<br>{SUBTITLE}</h1>
-  <div class="meta">{_gen_date} &middot; 基于历年年报/季报数据自动校准 &middot; 最近10年K线 &middot; 历史曲线为当前参数视角（含未来信息，仅展示口径）</div>
+  <div class="meta">{_gen_date} &middot; 基于历年年报/季报数据自动校准 &middot; 最近15年K线 &middot; 历史曲线为当前参数视角（含未来信息，仅展示口径）</div>
 </header>
 <nav class="toc-nav">
   <div class="toc-inner">
@@ -717,7 +742,7 @@ html {{ scroll-behavior: smooth; }}
 <footer>
   <h2>数据来源与参考</h2>
   <ol>
-    <li>腾讯财经API - 最近10年日K线行情数据（前复权）</li>
+    <li>腾讯财经API - 最近15年日K线行情数据（评分用后复权，展示为真实成交价）</li>
     <li>东方财富财务数据 - {STOCK_NAME}历年年报、半年报、季度报告</li>
     <li>{STOCK_NAME}2025年年度报告</li>
   </ol>
@@ -797,7 +822,7 @@ html {{ scroll-behavior: smooth; }}
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#999', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: <span style="color:#c0392b;font-weight:700">' + d.close + '</span> 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
+        return '<strong>' + d.date + '</strong> &nbsp; 历史百分位: <strong>' + d._pct + '%</strong><br/>分数: <strong>' + d.score + '</strong><br/>收盘价: <span style="color:#c0392b;font-weight:700">' + d.close + '</span> 元<br/>收盘价(qfq): ' + (d.close_qfq != null ? d.close_qfq + ' 元' + (d.close_qfq < 0 ? ' <span style="color:#9a6700">（前复权口径：累计分红超过当年股价，故为负）</span>' : '') : '-') + '<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong>' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
     legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#1a1a1a', fontSize: 12 }}, itemGap: 20 }},
@@ -937,7 +962,7 @@ function openFullscreenChart() {{
       axisPointer: {{ type: 'cross', crossStyle: {{ color: '#6b7280', width: 0.5 }} }},
       formatter: function(p) {{
         var idx = p[0].dataIndex; var d = data[idx];
-        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: <span style="color:#f87171;font-weight:700">' + d.close + '</span> 元<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
+        return '<strong style="color:#60a5fa">' + d.date + '</strong> &nbsp; 历史百分位: <strong style="color:#fff">' + d._pct + '%</strong><br/>分数: <strong style="color:#fff">' + d.score + '</strong><br/>收盘价: <span style="color:#f87171;font-weight:700">' + d.close + '</span> 元<br/>收盘价(qfq): ' + (d.close_qfq != null ? d.close_qfq + ' 元' + (d.close_qfq < 0 ? ' <span style="color:#9a6700">（前复权口径：累计分红超过当年股价，故为负）</span>' : '') : '-') + '<br/>收益率: ' + (d.pe_ttm > 0 ? (100 / d.pe_ttm).toFixed(2) : '-') + '% (PE ' + d.pe_ttm + ')<br/>PB: ' + d.pb + '<br/>总市值: ' + d.market_cap.toFixed(0) + ' 亿' + (VALUATION_DATA.digest ? '<br/>消化版分数: <strong style="color:#c084fc">' + VALUATION_DATA.digest.scores[idx] + '</strong>' : '');
       }}
     }},
     legend: {{ data: ['分数(0-100)'{_digest_legend_js}, '收盘价(元)', '收益率%(1/PE)'], top: 8, textStyle: {{ color: '#9ca3af', fontSize: 12 }}, itemGap: 20 }},

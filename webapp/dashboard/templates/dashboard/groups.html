@@ -1,0 +1,161 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}分组管理 · A股估值控制台{% endblock %}
+{% block navgroups %}active{% endblock %}
+{% block content %}
+<div class="wrap">
+  <h2 style="margin:4px 0 12px">分组管理</h2>
+
+  <div class="cards">
+    <div class="card">
+      <h3>分组列表</h3>
+      <div class="flex" style="margin-bottom:8px">
+        <input type="text" id="new-name" placeholder="新分组名，如 半导体" size="16">
+        <button class="primary" id="btn-create">建组</button>
+      </div>
+      <table class="grid" id="tbl-groups">
+        <thead><tr><th>名称</th><th>成员数</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h3>组成员 <span class="muted" id="member-title" style="font-weight:400;font-size:13px">（点击左侧分组查看）</span></h3>
+      <div id="member-box" style="max-height:360px;overflow:auto"></div>
+    </div>
+  </div>
+
+  <div class="card mt">
+    <h3>给股票贴标签
+      <span class="actions muted" style="font-weight:400">搜索股票后勾选/取消分组，一只股票可属于多个分组</span>
+    </h3>
+    <div class="flex">
+      <input type="text" id="q" placeholder="6位代码或名称关键字" size="24" autocomplete="off">
+      <span id="q-hint" class="muted"></span>
+    </div>
+    <div id="tag-results" class="mt" style="max-height:420px;overflow:auto"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let GROUPS = [];            // [{id,name,is_builtin,count,codes}]
+let selectedGroupId = null;
+let SEARCH = [];            // 搜索命中的 [{code,name}]
+const NAME_CACHE = {};
+
+function groupById(id) { return GROUPS.find(g => g.id === id); }
+function codesOf(id) { const g = groupById(id); return new Set(g ? g.codes : []); }
+
+async function loadGroups() {
+  const data = await api.get('/api/groups/');
+  GROUPS = data.groups;
+  renderGroupTable();
+  renderTagResults();
+  if (selectedGroupId) selectGroup(selectedGroupId, true);
+}
+
+function renderGroupTable() {
+  $('#tbl-groups tbody').innerHTML = GROUPS.map(g => `
+    <tr class="clickable ${selectedGroupId === g.id ? 'sel' : ''}" data-id="${g.id}">
+      <td>${api.esc(g.name)}${g.is_builtin ? ' <span class="tag wl">内置</span>' : ''}</td>
+      <td class="num">${g.count}</td>
+      <td>${g.is_builtin ? '' : `<button class="danger" onclick="deleteGroup(${g.id})">删除</button>`}</td>
+    </tr>`).join('');
+  document.querySelectorAll('#tbl-groups tbody tr').forEach(tr =>
+    tr.addEventListener('click', e => {
+      if (e.target.tagName === 'BUTTON') return;
+      selectGroup(Number(tr.dataset.id));
+    }));
+}
+
+async function selectGroup(id, keepQuiet) {
+  selectedGroupId = id;
+  renderGroupTable();
+  const g = await api.get(`/api/groups/${id}/`);
+  g.members.forEach(m => NAME_CACHE[m.code] = m.name);
+  $('#member-title').textContent = `「${g.name}」${g.members.length} 只`;
+  $('#member-box').innerHTML = g.members.length ? `
+    <table class="grid"><tbody>
+      ${g.members.map(m => `
+        <tr><td class="num">${api.esc(m.code)}</td><td>${api.esc(m.name)}</td>
+            <td><button class="danger" onclick="removeMember(${g.id}, '${m.code}')">移除</button></td></tr>`).join('')}
+    </tbody></table>` : '<div class="empty-tip">空分组</div>';
+}
+
+async function removeMember(groupId, code) {
+  await api.post('/api/groups/set-stock/', {code, group_id: groupId, add: false});
+  loadGroups();
+}
+
+window.deleteGroup = async (id) => {
+  const g = groupById(id);
+  if (!g) return;
+  if (!window.confirm(`删除分组「${g.name}」？成员股票本身不受影响。`)) return;
+  await api.post(`/api/groups/${id}/delete/`);
+  if (selectedGroupId === id) {
+    selectedGroupId = null;
+    $('#member-box').innerHTML = '';
+    $('#member-title').textContent = '（点击左侧分组查看）';
+  }
+  loadGroups();
+};
+
+$('#btn-create').addEventListener('click', async () => {
+  const name = $('#new-name').value.trim();
+  if (!name) return;
+  const r = await api.post('/api/groups/create/', {name});
+  if (r.status !== 200) { alert(r.data.error || '建组失败'); return; }
+  $('#new-name').value = '';
+  loadGroups();
+});
+$('#new-name').addEventListener('keydown', e => { if (e.key === 'Enter') $('#btn-create').click(); });
+
+// ---- 贴标签：搜索 + 勾选 ----
+let qTimer = null;
+$('#q').addEventListener('input', () => {
+  clearTimeout(qTimer);
+  qTimer = setTimeout(runSearch, 300);
+});
+
+async function runSearch() {
+  const q = $('#q').value.trim();
+  if (!q) { SEARCH = []; renderTagResults(); return; }
+  const {results} = await api.get('/api/search/?q=' + encodeURIComponent(q));
+  SEARCH = results;
+  results.forEach(r => NAME_CACHE[r.code] = r.name);
+  $('#q-hint').textContent = `${results.length} 条`;
+  renderTagResults();
+}
+
+function renderTagResults() {
+  const box = $('#tag-results');
+  if (!SEARCH.length) { box.innerHTML = ''; return; }
+  box.innerHTML = `
+    <table class="grid"><thead><tr>
+      <th>代码</th><th>名称</th><th>当前标签</th>
+      ${GROUPS.map(g => `<th style="text-align:center" title="勾选=加入分组">${api.esc(g.name)}</th>`).join('')}
+    </tr></thead><tbody>
+    ${SEARCH.map(r => {
+      const code = r.code;
+      return `<tr data-code="${code}">
+        <td class="num">${code}</td>
+        <td>${api.esc(r.name)}${r.in_watchlist ? ' <span class="tag wl">watchlist</span>' : ''}</td>
+        <td>${GROUPS.filter(g => codesOf(g.id).has(code))
+                     .map(g => `<span class="tag wl">${api.esc(g.name)}</span>`).join(' ')
+                    || '<span class="muted">—</span>'}</td>
+        ${GROUPS.map(g => `<td style="text-align:center">
+            <input type="checkbox" ${codesOf(g.id).has(code) ? 'checked' : ''}
+                   onchange="toggleTag('${code}', ${g.id}, this.checked)">
+          </td>`).join('')}
+      </tr>`;
+    }).join('')}
+    </tbody></table>`;
+}
+
+async function toggleTag(code, groupId, checked) {
+  await api.post('/api/groups/set-stock/', {code, group_id: groupId, add: checked});
+  loadGroups();
+}
+
+loadGroups();
+</script>
+{% endblock %}
