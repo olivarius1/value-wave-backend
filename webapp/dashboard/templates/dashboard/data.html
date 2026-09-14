@@ -45,6 +45,12 @@
       </h3>
       <div class="kv" data-kv></div>
     </div>
+    <div class="card" id="card-boards">
+      <h3>板块 / 指数归属
+        <span class="actions"><button data-kind="boards" class="primary" title="每股一次接口拉取全部板块与指数成分（30天内已获取的跳过），全市场约35分钟">属性刷新</button></span>
+      </h3>
+      <div class="kv" data-kv></div>
+    </div>
     <div class="card" id="card-report">
       <h3>估值报告
         <span class="actions">
@@ -141,6 +147,14 @@ function renderStatus(st) {
     ['有事件数据', b.covered],
     ['30天内新鲜', b.fresh, b.covered - b.fresh ? 'warn' : 'good'],
   ]);
+  const bd = st.boards || {};
+  kv('#card-boards', [
+    ['已获取属性', bd.covered || 0],
+    ['未获取', Math.max((bd.listed || 0) - (bd.covered || 0), 0), (bd.listed || 0) > (bd.covered || 0) ? 'warn' : 'good'],
+    ['关系条数', bd.relations || 0],
+    ['指数板块', bd.index_boards || 0],
+    ['最近刷新', `${bd.last || '—'} (${ago(bd.last_ago)})`],
+  ]);
   kv('#card-report', [
     ['报告文件', `${st.reports.count} 份`],
     ['最近生成', st.reports.latest || '—'],
@@ -161,13 +175,14 @@ async function runSearch() {
   $('#q-hint').textContent = `${results.length} 条`;
   $('#search-results').innerHTML = results.length ? `
     <table class="grid"><thead><tr>
-      <th>代码</th><th>名称</th><th>模型</th><th>K线至</th><th>财报更新</th><th>分数</th><th style="width:190px">操作</th>
+      <th>代码</th><th>名称</th><th>模型</th><th>板块/指数</th><th>K线至</th><th>财报更新</th><th>分数</th><th style="width:190px">操作</th>
     </tr></thead><tbody>
     ${results.map(r => `
       <tr>
         <td class="num">${api.esc(r.code)}</td>
         <td>${api.esc(r.name)} ${r.in_watchlist ? '<span class="tag wl">watchlist</span>' : ''}</td>
         <td>${api.esc(r.model || '—')}${r.model_source === 'ai' ? ' <span class="muted">(AI)</span>' : ''}</td>
+        <td style="max-width:260px;white-space:normal">${(r.indexes || []).map(i => `<span class="tag wl">${api.esc(i)}</span>`).join(' ')} ${(r.boards || []).slice(0, 3).map(b => `<span class="tag">${api.esc(b)}</span>`).join(' ') || '<span class="muted">—</span>'}</td>
         <td class="num">${api.esc(r.kline_last_date || '无')}</td>
         <td class="num">${api.esc(r.fin_reports_updated || '无')}</td>
         <td class="num">${r.score == null ? '—' : r.score}</td>

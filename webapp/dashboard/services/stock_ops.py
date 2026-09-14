@@ -173,7 +173,12 @@ def search_stocks(q, limit=20):
     out = []
     for code, name in rows:
         name_n = unicodedata.normalize('NFKC', name or '')
-        out.append(_enrich(score_conn, wl, code, name_n))
+        item = _enrich(score_conn, wl, code, name_n)
+        bs = kline_store.boards_for_code(code)
+        item['indexes'] = [b['board_name'].rstrip('_') for b in bs if b['board_type'] == 'index']
+        item['boards'] = [b['board_name'] for b in bs
+                          if b['board_type'] in ('industry', 'concept', 'region')][:6]
+        out.append(item)
     out.sort(key=lambda r: (0 if r['in_watchlist'] else 1, r['code']))
     return out[:limit]
 

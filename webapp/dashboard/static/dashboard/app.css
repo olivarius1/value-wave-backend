@@ -151,3 +151,8 @@ table.grid tbody tr.clickable { cursor: pointer; }
 .mt { margin-top: 14px; }
 .flex { display: flex; gap: 8px; align-items: center; }
 .spin { display: inline-block; animation: pulse 1s infinite; }
+.dd-sep {
+  padding: 4px 12px; font-size: 11px; color: var(--muted);
+  border-top: 1px solid var(--border); margin-top: 4px;
+}
+#board-dd-menu { max-height: 420px; overflow-y: auto; }

@@ -15,6 +15,8 @@ urlpatterns = [
     path('api/report/status/', views.api_report_status),
     path('report/frame/<str:code>/', views.report_frame),
 
+    path('api/boards/', views.api_boards),
+    path('api/board/codes/', views.api_board_codes),
     path('api/groups/', views.api_groups),
     path('api/groups/create/', views.api_group_create),
     path('api/groups/set-stock/', views.api_group_set_stock),

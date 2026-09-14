@@ -45,6 +45,7 @@ SCRIPT_JOBS = {
     'factors':      ('score_factors.py', ['--backfill'], '算分因子回填（30天内跳过）'),
     'bonus_warmup': ('warmup_bonus_events.py', [], '分红送转事件预热'),
     'score_all':    ('score_market.py', [], '全市场评分（增量：K线无新数据的股票跳过）'),
+    'boards':       ('fetch_boards.py', [], '板块/指数属性刷新（30天内已获取的跳过）'),
     'reports_rebuild': ('batch_rebuild.py', ['--summary'],
                         '批量重建 watchlist 报告（逐只 build_report，较慢）'),
 }

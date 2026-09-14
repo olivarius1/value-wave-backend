@@ -134,6 +134,19 @@ def _reports_status():
     return {'count': len(files), 'latest': latest, 'latest_ago_days': ago}
 
 
+def _boards_status():
+    conn = kline_store._conn()
+    covered = conn.execute('SELECT COUNT(DISTINCT code) FROM stock_board').fetchone()[0]
+    relations = conn.execute('SELECT COUNT(*) FROM stock_board').fetchone()[0]
+    index_boards = conn.execute(
+        "SELECT COUNT(DISTINCT board_code) FROM stock_board WHERE board_type='index'").fetchone()[0]
+    last = conn.execute('SELECT MAX(updated) FROM stock_board').fetchone()[0] or ''
+    listed = conn.execute(
+        "SELECT COUNT(*) FROM stock_basic WHERE excluded=0 AND status='listed'").fetchone()[0]
+    return {'covered': covered, 'relations': relations, 'index_boards': index_boards,
+            'listed': listed, 'last': last, 'last_ago': _days_ago(last)}
+
+
 def status_json():
     return {
         'generated_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -141,5 +154,6 @@ def status_json():
         'finance': _fin_status(),
         'classify': _classify_status(),
         'factors': _factors_status(),
+        'boards': _boards_status(),
         'reports': _reports_status(),
     }

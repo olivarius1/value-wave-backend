@@ -11,6 +11,10 @@
       <button id="group-dd-btn" title="按分组筛选">分组: 全部 ▾</button>
       <div class="dropdown-menu" id="group-dd-menu" style="display:none"></div>
     </div>
+    <div class="dropdown">
+      <button id="board-dd-btn" title="按板块/指数成分筛选（数据来自「属性刷新」任务）">板块/指数: 全部 ▾</button>
+      <div class="dropdown-menu" id="board-dd-menu" style="display:none;max-height:420px;overflow-y:auto"></div>
+    </div>
     <span class="muted" title="当前分在自身15年分数序列中的历史分位达到该值进入高分tab（默认95 = 回测网格选定的买入分位）">高分≥</span>
     <input type="number" id="t-hi" min="0" max="100" value="95" style="width:62px"><span class="muted">%</span>
     <span class="muted" title="当前分在自身15年分数序列中的历史分位低于该值进入低分tab（默认10 = 回测网格选定的卖出分位）">低分≤</span>
@@ -71,16 +75,26 @@ let sortState = {hi: {key: 'score', dir: -1}, lo: {key: 'score', dir: 1}};
 let ROWS = [];
 let LATEST = '';   // 最新交易日
 let GROUPS = [];   // [{id,name,count,codes}]，分组筛选
+let BOARDS = [];   // [{board_code,board_name,board_type,n}]，板块/指数筛选
+let selectedBoard = localStorage.getItem('scoreBoard') || '';
 // 分组筛选记忆：null=未设置(默认「自选」内置组) / 'all'=明确选全部 / 其他=组id
 let savedGroup = localStorage.getItem('scoreGroup');
 let selectedGroupId = savedGroup && savedGroup !== 'all' ? savedGroup : '';
 // 退市/长期停牌遗留股（序列落后最新交易日>60天，后端标记 delisted）系统级排除，
 // 面板不显示；其余股票一律正常显示（含当日涨停/跌停，不做任何标注）
+let boardCodesCache = {};
 function groupPool() {
-  if (!selectedGroupId) return ROWS;
-  const g = GROUPS.find(x => String(x.id) === selectedGroupId);
-  const codes = new Set(g ? g.codes : []);
-  return ROWS.filter(r => codes.has(r.code));
+  let pool = ROWS;
+  if (selectedGroupId) {
+    const g = GROUPS.find(x => String(x.id) === selectedGroupId);
+    const codes = new Set(g ? g.codes : []);
+    pool = pool.filter(r => codes.has(r.code));
+  }
+  if (selectedBoard) {
+    const codes = new Set(boardCodesCache[selectedBoard] || []);
+    pool = pool.filter(r => codes.has(r.code));
+  }
+  return pool;
 }
 function visibleRows() {
   return groupPool().filter(r => !r.delisted);
@@ -151,6 +165,54 @@ function applyThresholds() {
   renderTable('lo');
 }
 
+async function loadBoards() {
+  const data = await api.get('/api/boards/');
+  BOARDS = data.boards;
+  renderBoardMenu();
+}
+function boardMenuLabel() {
+  if (!selectedBoard) return '板块/指数: 全部 ▾';
+  const b = (BOARDS || []).find(x => x.board_code === selectedBoard);
+  return `板块/指数: ${b ? b.board_name.replace(/_+$/, '') : selectedBoard} ▾`;
+}
+function renderBoardMenu() {
+  const btn = $('#board-dd-btn');
+  if (btn) btn.textContent = boardMenuLabel();
+  const menu = $('#board-dd-menu');
+  if (!menu) return;
+  const list = BOARDS || [];
+  const idx = list.filter(b => b.board_type === 'index');
+  const rest = list.filter(b => b.board_type !== 'index');
+  menu.innerHTML =
+    '<div class="dd-item ' + (selectedBoard === '' ? 'active' : '') + '" data-bc="">全部</div>' +
+    (idx.length ? '<div class="dd-sep">— 指数成分 —</div>' +
+      idx.map(b => `<div class="dd-item ${selectedBoard === b.board_code ? 'active' : ''}" data-bc="${b.board_code}">${api.esc(b.board_name.replace(/_+$/, ''))} (${b.n})</div>`).join('') : '') +
+    '<div class="dd-sep">— 板块（按成分数排序，前200） —</div>' +
+    rest.slice(0, 200).map(b => `<div class="dd-item ${selectedBoard === b.board_code ? 'active' : ''}" data-bc="${b.board_code}">${api.esc(b.board_name)} (${b.n})</div>`).join('');
+  menu.querySelectorAll('.dd-item').forEach(el =>
+    el.addEventListener('click', async () => {
+      selectedBoard = el.dataset.bc;
+      localStorage.setItem('scoreBoard', selectedBoard);
+      menu.style.display = 'none';
+      if (selectedBoard && boardCodesCache[selectedBoard] == null) {
+        const r = await api.get('/api/board/codes/?board=' + selectedBoard);
+        boardCodesCache[selectedBoard] = r.codes;
+      }
+      renderBoardMenu();   // 更新按钮文字与选中态
+      loadScores();        // 刷新页头（含板块名）与 tab 计数
+    }));
+}
+$('#board-dd-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  const menu = $('#board-dd-menu');
+  menu.style.display = menu.style.display === 'none' ? '' : 'none';
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('#board-dd-menu') && !e.target.closest('#board-dd-btn')) {
+    $('#board-dd-menu').style.display = 'none';
+  }
+});
+
 async function loadGroups() {
   const data = await api.get('/api/groups/');
   GROUPS = data.groups;
@@ -213,8 +275,12 @@ async function loadScores() {
   const shown = groupPool().filter(r => !r.delisted).length;   // 面板可见只数（跟随分组）
   const groupName = selectedGroupId
     ? (GROUPS.find(g => String(g.id) === selectedGroupId) || {}).name || '' : '';
+  const boardName = selectedBoard
+    ? (((BOARDS || []).find(b => b.board_code === selectedBoard) || {}).board_name || selectedBoard).replace(/_+$/, '')
+    : '';
   $('#scan-meta').textContent =
     (groupName ? `分组「${groupName}」· ` : '') +
+    (boardName ? `板块「${boardName}」· ` : '') +
     `${shown} 只` +
     (LATEST ? ` · 最新交易日 ${LATEST}` : '') +
     (data.last_computed ? ` · 最近计算 ${data.last_computed}` : '');
@@ -256,7 +322,12 @@ setInterval(async () => {
   if (hadJob && hadJob !== key) loadScores();   // 评分/单股更新结束 → 刷新
   hadJob = key;
 }, 1500);
-loadGroups().then(loadScores);   // 先解析分组（含默认「自选」）再统计
+selectedBoard = localStorage.getItem('scoreBoard') || '';
+loadBoards().then(() => {
+  if (selectedBoard && boardCodesCache[selectedBoard] == null) {
+    return api.get('/api/board/codes/?board=' + selectedBoard).then(r => { boardCodesCache[selectedBoard] = r.codes; });
+  }
+}).then(loadGroups).then(loadScores);   // 先解析分组/板块（含默认「自选」）再统计
 pollScan();
 </script>
 {% endblock %}

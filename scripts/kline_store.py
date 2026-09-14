@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS classify_batch (
   started_at TEXT, finished_at TEXT
 ) WITHOUT ROWID;
 -- 全市场算分因子输入（score_factors.py 维护；供全市场扫描离线打分与规则交叉校验用）
+CREATE TABLE IF NOT EXISTS stock_board (
+  board_code TEXT NOT NULL, code TEXT NOT NULL,
+  board_name TEXT, board_type TEXT, updated TEXT,
+  PRIMARY KEY (board_code, code)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_stock_board_code ON stock_board(code);
 CREATE TABLE IF NOT EXISTS score_factors (
   code TEXT PRIMARY KEY,
   n_reports INTEGER, latest_report_date TEXT,
@@ -80,6 +86,14 @@ CREATE TABLE IF NOT EXISTS score_factors (
   revenue_growth_5y REAL, latest_revenue_yoy REAL, latest_profit_yoy REAL,
   roe_trend REAL, rd_ratio REAL, dps_ttm REAL, div_yield REAL,
   updated TEXT
+) WITHOUT ROWID;
+-- AI估计的因子值（ai_model_classifier.py --fill-factors 维护；长表一股一因子一行）
+CREATE TABLE IF NOT EXISTS ai_factors (
+  code TEXT NOT NULL, factor TEXT NOT NULL,
+  value REAL, value_text TEXT, confidence TEXT, reasons TEXT,
+  as_of TEXT, batch_id TEXT, ai_engine TEXT, prompt_version TEXT,
+  updated TEXT,
+  PRIMARY KEY (code, factor)
 ) WITHOUT ROWID;
 """
 
@@ -452,6 +466,53 @@ def classify_batch_all():
         'SELECT ' + ','.join(cols) + ' FROM classify_batch ORDER BY batch_id')]
 
 
+# ---------- stock_board（板块/指数归属，由 fetch_boards.py 维护） ----------
+# board_type: industry(行业) / concept(概念) / region(地域) / index(指数成分) / attr(交易属性)
+
+_BOARDS_COLS = ('board_code', 'code', 'board_name', 'board_type', 'updated')
+
+
+def boards_replace_for_code(code, boards, updated):
+    """整股覆写。boards: [(board_code, board_name, board_type), ...]"""
+    conn = _conn()
+    with _write_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            conn.execute('DELETE FROM stock_board WHERE code=?', (code,))
+            conn.executemany(
+                'INSERT OR REPLACE INTO stock_board VALUES (?,?,?,?,?)',
+                [(bc, code, bn, bt, updated) for bc, bn, bt in boards])
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def boards_for_code(code):
+    return [dict(zip(_BOARDS_COLS, r)) for r in _conn().execute(
+        'SELECT ' + ','.join(_BOARDS_COLS) + ' FROM stock_board WHERE code=? '
+        'ORDER BY board_type, board_code', (code,))]
+
+
+def codes_for_board(board_code):
+    return [r[0] for r in _conn().execute(
+        'SELECT code FROM stock_board WHERE board_code=? ORDER BY code', (board_code,))]
+
+
+def board_last_updated(code):
+    row = _conn().execute(
+        'SELECT MAX(updated) FROM stock_board WHERE code=?', (code,)).fetchone()
+    return (row[0] if row else '') or ''
+
+
+def boards_summary():
+    """各板块的成分股数量（含类型），供筛选下拉"""
+    return [dict(zip(('board_code', 'board_name', 'board_type', 'n'), r))
+            for r in _conn().execute(
+                'SELECT board_code, MAX(board_name), MAX(board_type), COUNT(*) '
+                'FROM stock_board GROUP BY board_code ORDER BY COUNT(*) DESC')]
+
+
 # ---------- score_factors（全市场算分因子输入，由 score_factors.py 维护） ----------
 
 _SF_COLS = ('code', 'n_reports', 'latest_report_date', 'avg_roe', 'avg_gross_margin',
@@ -491,3 +552,39 @@ def meta_quote(ktype, code):
     if r is None:
         return None
     return {'pe': r[0], 'pb': r[1], 'price': r[2], 'qt_date': r[3]}
+
+
+# ---------- ai_factors（AI估计的因子值，由 ai_model_classifier.py --fill-factors 读写） ----------
+
+_AF_COLS = ('code', 'factor', 'value', 'value_text', 'confidence', 'reasons',
+            'as_of', 'batch_id', 'ai_engine', 'prompt_version', 'updated')
+
+
+def ai_factors_upsert(rows):
+    import datetime
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    conn = _conn()
+    with _write_lock:
+        for r in rows:
+            vals = {c: r.get(c) for c in _AF_COLS}
+            vals['updated'] = now
+            conn.execute(
+                f'INSERT OR REPLACE INTO ai_factors ({",".join(_AF_COLS)}) '
+                f'VALUES ({",".join("?" * len(_AF_COLS))})',
+                tuple(vals[c] for c in _AF_COLS))
+        conn.commit()
+
+
+def ai_factors_get(code=None, factor=None):
+    """返回 {(code, factor): row_dict}；可按 code/factor 过滤"""
+    sql = f'SELECT {",".join(_AF_COLS)} FROM ai_factors'
+    cond, args = [], []
+    if code is not None:
+        cond.append('code=?')
+        args.append(code)
+    if factor is not None:
+        cond.append('factor=?')
+        args.append(factor)
+    if cond:
+        sql += ' WHERE ' + ' AND '.join(cond)
+    return {(r[0], r[1]): dict(zip(_AF_COLS, r)) for r in _conn().execute(sql, args)}

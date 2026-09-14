@@ -213,6 +213,29 @@ def api_group_set_stock(request):
                          'group': g.name, 'member': add})
 
 
+# ---------- 板块/指数 API ----------
+
+@require_GET
+def api_boards(request):
+    """板块/指数筛选清单（含成分股数）。type 过滤可选（index/concept/industry/region/attr）"""
+    import kline_store
+    bt = (request.GET.get('type') or '').strip()
+    rows = kline_store.boards_summary()
+    if bt:
+        rows = [r for r in rows if r['board_type'] == bt]
+    return JsonResponse({'boards': rows})
+
+
+@require_GET
+def api_board_codes(request):
+    """某板块/指数的成分股代码"""
+    import kline_store
+    bc = (request.GET.get('board') or '').strip()
+    if not bc:
+        return JsonResponse({'error': '缺少 board 参数'}, status=400)
+    return JsonResponse({'board': bc, 'codes': kline_store.codes_for_board(bc)})
+
+
 # ---------- 任务 API ----------
 
 @require_GET
